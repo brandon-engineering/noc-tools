@@ -1,0 +1,9 @@
+[Unit]
+Description=Network syslog alert watcher
+After=network.target
+
+[Service]
+Environment="DISCORD_WEBHOOK_URL=REPLACE_WITH_YOUR_REAL_WEBHOOK_URL"
+ExecStart=/usr/bin/python3 /home/netadmin/ansible/Syslog/netalert.py
+Restart=always
+User=netadmin

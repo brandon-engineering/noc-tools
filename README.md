@@ -63,13 +63,18 @@ generic alert, so nothing silently fails to notify.
    export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
    ```
 
-   For a persistent/production setup via systemd, add it to the
-   service file instead:
-   ```ini
-   [Service]
-   Environment="DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/..."
-   ExecStart=/usr/bin/python3 /path/to/netalert.py
+   For a persistent/production setup via systemd, use the included
+   `netalert.service` template:
+   ```bash
+   sudo cp netalert.service /etc/systemd/system/netalert.service
+   sudo nano /etc/systemd/system/netalert.service
+   # Replace REPLACE_WITH_YOUR_REAL_WEBHOOK_URL with your actual webhook
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now netalert.service
    ```
+   Never edit and commit your real webhook into `netalert.service`
+   itself - it stays local to the machine running the service, same
+   as the environment-variable approach above.
 
 3. Edit `LOGFILE` at the top of the script to match where your syslog
    messages actually land (e.g. `/var/log/network-devices.log`).
