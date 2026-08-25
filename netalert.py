@@ -3,12 +3,19 @@ import requests
 import re
 import os
 import time
+from typing import Optional, Tuple
 
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
+IRM_WEBHOOK_URL = os.environ.get("IRM_WEBHOOK_URL")
 LOGFILE = "/var/log/network-devices.log"
 
 if not WEBHOOK_URL:
     raise SystemExit("DISCORD_WEBHOOK_URL environment variable not set")
+
+# Hosts that should also fire an alert into Grafana IRM (in addition to
+# Discord), for practicing the acknowledge/escalate workflow. Currently
+# scoped to just the edge routers - expand this set as needed.
+IRM_ALERT_HOSTS = {"EdgeR1", "EdgeR2"}
 
 PATTERN = re.compile(r"%LINK-3-UPDOWN|%LINEPROTO-5-UPDOWN|%LINK-5-CHANGED")
 
@@ -46,12 +53,14 @@ DEVICE_INTERFACE_MAP = {
 }
 
 
-def build_message(line: str) -> str:
+def build_message(line: str) -> Tuple[str, Optional[str]]:
     """Return a friendly, enriched Discord message if we recognize the
-    device/interface; otherwise fall back to the original raw format."""
+    device/interface; otherwise fall back to the original raw format.
+    Also returns the parsed hostname (or None if unparsed), so the
+    caller can decide whether this event should also go to IRM."""
     match = PARSE_PATTERN.search(line)
     if not match:
-        return f"⚠️ Interface event: {line.strip()}"
+        return f"⚠️ Interface event: {line.strip()}", None
 
     host = match.group("host")
     interface = match.group("interface")
@@ -62,11 +71,11 @@ def build_message(line: str) -> str:
     state_icon = "🔴" if state == "down" else "🟢"
 
     if friendly and state == "down":
-        return f"{state_icon} {friendly}\nDevice: {host} | Interface: {interface} | State: DOWN"
+        return f"{state_icon} {friendly}\nDevice: {host} | Interface: {interface} | State: DOWN", host
     elif friendly and state == "up":
-        return f"{state_icon} {host} {interface} has RECOVERED (previously flagged as down).\nDevice: {host} | Interface: {interface} | State: UP"
+        return f"{state_icon} {host} {interface} has RECOVERED (previously flagged as down).\nDevice: {host} | Interface: {interface} | State: UP", host
     else:
-        return f"{state_icon} Interface event: {host} {interface} changed state to {state.upper()}"
+        return f"{state_icon} Interface event: {host} {interface} changed state to {state.upper()}", host
 
 
 def wait_for_logfile(path: str, check_interval_seconds: int = 5) -> None:
@@ -86,5 +95,25 @@ wait_for_logfile(LOGFILE)
 proc = subprocess.Popen(["tail", "-F", LOGFILE], stdout=subprocess.PIPE, text=True)
 for line in proc.stdout:
     if PATTERN.search(line):
-        message = build_message(line)
+        message, host = build_message(line)
         requests.post(WEBHOOK_URL, json={"content": message})
+
+        if IRM_WEBHOOK_URL and host in IRM_ALERT_HOSTS:
+            try:
+                match = PARSE_PATTERN.search(line)
+                interface = match.group("interface") if match else "unknown"
+                alert_key = f"{host}-{interface}"
+                noc_check_command = f"noccheck MemberA {host} {interface}"
+                requests.post(
+                    IRM_WEBHOOK_URL,
+                    json={
+                        "message": message,
+                        "alert_key": alert_key,
+                        "noc_check_command": noc_check_command,
+                    },
+                    timeout=5,
+                )
+            except requests.exceptions.RequestException:
+                # Don't let an IRM delivery failure interrupt Discord
+                # alerting, which is the primary/already-proven channel.
+                pass
