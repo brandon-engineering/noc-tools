@@ -29,6 +29,7 @@ import os
 import re
 import getpass
 import yaml
+from datetime import datetime
 from netmiko import ConnectHandler
 from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
 
@@ -146,23 +147,68 @@ def parse_state(raw_output: str) -> dict:
     }
 
 
-def parse_last_state_change(raw_interface_output: str) -> str:
-    """Pull the 'line protocol ... last flapped' / uptime-in-current-
-    state duration out of the raw show interface output, if present.
-    IOS doesn't always include this by default (depends on platform/
-    image), so this returns a plain message rather than failing if
-    it's not there."""
-    match = re.search(
-        r"Line protocol.*?last (?:input|flapped).*", raw_interface_output, re.IGNORECASE
-    )
-    if match:
-        return match.group(0).strip()
+def calculate_duration_in_state(recent_events: list, current_state: str) -> str:
+    """Calculate how long the interface has been in its current
+    state, based on the most recent matching event timestamp pulled
+    from the device's own log buffer. Falls back to a plain message
+    if there's no usable history to calculate from (e.g. the buffer
+    doesn't go back far enough, or the device was recently rebooted).
 
-    match = re.search(r"Last input (\S+), output (\S+)", raw_interface_output)
-    if match:
-        return f"Last input {match.group(1)}, output {match.group(2)} (time since last traffic, not necessarily since last state change)"
+    Assumes the device's clock is accurate (NTP-synced) - this
+    project's routers are, but this is worth knowing if the tool is
+    ever pointed at a device with a wrong clock.
+    """
+    if not recent_events:
+        return f"Interface is currently {current_state.upper()} - no recent state-change history available to calculate duration."
 
-    return "Could not determine time in current state from this platform's output."
+    # recent_events are "Mon DD HH:MM:SS  STATE", most recent first.
+    # Find the most recent event and use its timestamp - if the
+    # current live state doesn't match the most recent logged event
+    # (e.g. a flap happened seconds ago and hasn't synced through
+    # syslog yet), say so rather than reporting a misleading duration.
+    most_recent = recent_events[0]
+    match = re.match(r"(\w{3} \d{1,2} \d{2}:\d{2}:\d{2})\s+(UP|DOWN)", most_recent)
+    if not match:
+        return f"Interface is currently {current_state.upper()} - could not parse timing from device history."
+
+    timestamp_str, logged_state = match.groups()
+    if logged_state.lower() != current_state.lower():
+        return (
+            f"Interface is currently {current_state.upper()}, but the most recent "
+            f"logged event ({most_recent.strip()}) doesn't match - state may have "
+            f"just changed. Check current status above as the source of truth."
+        )
+
+    try:
+        # Device logs don't include the year - assume current year,
+        # which is correct for anything in the recent log buffer.
+        event_time = datetime.strptime(f"{datetime.now().year} {timestamp_str}", "%Y %b %d %H:%M:%S")
+        delta = datetime.now() - event_time
+        if delta.total_seconds() < 0:
+            # Clock skew or year rollover edge case
+            return f"Interface has been {current_state.upper()} since {timestamp_str} (device time)."
+        return f"Interface has been {current_state.upper()} for {format_timedelta(delta)} (since {timestamp_str})."
+    except ValueError:
+        return f"Interface is currently {current_state.upper()} - could not calculate exact duration."
+
+
+def format_timedelta(delta) -> str:
+    """Format a timedelta as a short, human-readable duration."""
+    total_seconds = int(delta.total_seconds())
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if not parts:
+        parts.append(f"{seconds}s")
+    return " ".join(parts)
 
 
 def parse_transceiver_summary(raw_transceiver_output: str) -> str:
@@ -346,8 +392,9 @@ def main():
     print(f"Protocol:  {state['protocol']}")
 
     # Recent flap history from the device's own local log buffer -
-    # shown early, before the suggested next step, so a tech sees the
-    # flap pattern before reading the recommendation.
+    # gathered and shown unconditionally (up/up included), so a tech
+    # can rule out a false alert by seeing there's been no recent
+    # flapping, not just when something is currently down.
     print("\n--- Recent interface history (this device's local log) ---")
     raw_log_output = run_command(conn, f"show logging | include {interface}")
     recent_events = parse_recent_history(raw_log_output, interface)
@@ -360,9 +407,12 @@ def main():
     print()
     print(suggest_next_step(state, site, hostname, interface))
 
-    # Time in current state
+    # Real elapsed time in current state, calculated from the most
+    # recent matching event above - not just raw IOS text, and shown
+    # regardless of up or down.
+    current_state_word = "up" if state["protocol"] == "up" and state["status"] == "up" else "down"
     print("\n--- Time in current state ---")
-    print(f"   {parse_last_state_change(raw_interface_output)}")
+    print(f"   {calculate_duration_in_state(recent_events, current_state_word)}")
 
     # Transceiver / optical light levels
     print("\n--- Transceiver status ---")
