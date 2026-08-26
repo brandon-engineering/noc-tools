@@ -63,6 +63,37 @@ VRRP_CHECK_ON_DOWN = {
     ("MemberA", "R2", "GigabitEthernet0/0"): "PTP link to EdgeR2 down",
 }
 
+# Maps a specific WAN-facing interface (site, hostname, interface) to
+# a neighbor device that reaches it via a dedicated static route over
+# the direct backbone link (Gi0/2) - NOT via OSPF (the outside subnet
+# is deliberately never advertised into Area 0) and NOT via any
+# shared outside segment (in this lab, EdgeR1/EdgeR2 happen to share
+# unmanaged-switch-0 as a stand-in for two separate real ISP
+# circuits, but that's a lab convenience, not something to rely on).
+#
+# Purpose: Cisco IOS doesn't expose optical light levels the way some
+# other vendors do, so directly pinging the WAN interface's own IP
+# from a neighbor is the practical substitute for verifying the
+# interface is actually passing traffic at all - not just "is the
+# router alive" (which a loopback ping would answer instead).
+#
+# Value is a dict: neighbor hostname, the backbone interface on that
+# neighbor to source the ping from, and the target IP - the affected
+# router's actual Gi0/0 (WAN) address, reachable only via the static
+# route added by edge_outside_static_routes.yml.
+NEIGHBOR_PING_CHECK = {
+    ("MemberA", "EdgeR1", "GigabitEthernet0/0"): {
+        "neighbor": "EdgeR2",
+        "source_interface": "GigabitEthernet0/2",
+        "target_ip": "10.0.0.31",
+    },
+    ("MemberA", "EdgeR2", "GigabitEthernet0/0"): {
+        "neighbor": "EdgeR1",
+        "source_interface": "GigabitEthernet0/2",
+        "target_ip": "10.0.0.32",
+    },
+}
+
 # How many recent up/down events to show from the device's own local
 # log buffer.
 RECENT_HISTORY_COUNT = 10
@@ -231,6 +262,74 @@ def parse_transceiver_summary(raw_transceiver_output: str) -> str:
         return f"Tx Power: {tx} | Rx Power: {rx}"
 
     return "Transceiver data returned but light levels could not be parsed - see raw output below."
+
+
+def parse_ping_success_rate(raw_ping_output: str) -> str:
+    """Extract the success rate line from a Cisco IOS ping's output
+    (e.g. 'Success rate is 100 percent (5/5)') and translate it into
+    a plain-language reachability statement."""
+    match = re.search(
+        r"Success rate is (?P<percent>\d+) percent \((?P<received>\d+)/(?P<sent>\d+)\)",
+        raw_ping_output,
+    )
+    if not match:
+        return "Could not determine ping result from output - see raw output below."
+
+    percent = int(match.group("percent"))
+    received = match.group("received")
+    sent = match.group("sent")
+
+    if percent == 0:
+        return (
+            f"0% success ({received}/{sent} replies) - the WAN interface itself is "
+            f"NOT reachable via the dedicated backbone static route either. "
+            f"Consistent with a genuine physical/link-layer failure on this "
+            f"interface, not just a reporting issue."
+        )
+    if percent == 100:
+        return (
+            f"100% success ({received}/{sent} replies) - the WAN interface IS "
+            f"reachable via the dedicated backbone static route, despite showing "
+            f"down/down. This is unusual and worth investigating further - "
+            f"possible stale state on the device, an intermittent condition, or a "
+            f"discrepancy between reported and actual interface state."
+        )
+    return (
+        f"{percent}% success ({received}/{sent} replies) - partially reachable. "
+        f"May indicate an intermittent or flapping condition on the interface "
+        f"itself, rather than a hard failure."
+    )
+
+
+def run_neighbor_ping_check(site: str, neighbor_hostname: str, source_interface: str,
+                             target_ip: str, username: str, password: str) -> str:
+    """Connect to a neighboring device and have it ping the affected
+    router's actual WAN (Gi0/0) interface IP directly, sourced from
+    its own backbone interface, over a dedicated static route (see
+    edge_outside_static_routes.yml) - NOT via OSPF and NOT via any
+    shared outside segment. This is a practical substitute for
+    optical light levels, which Cisco IOS doesn't expose the way some
+    other vendors do, letting a tech verify the WAN interface itself
+    is actually passing traffic rather than just checking if the
+    router is alive in general."""
+    neighbor_ip = load_inventory_host(site, neighbor_hostname)
+    if not neighbor_ip:
+        return f"Could not find neighbor '{neighbor_hostname}' in inventory/{site}.yml - skipping neighbor ping check."
+
+    try:
+        neighbor_conn = connect(neighbor_ip, username, password)
+    except NetmikoAuthenticationException:
+        return f"Authentication failed connecting to neighbor {neighbor_hostname} - skipping neighbor ping check."
+    except NetmikoTimeoutException:
+        return f"Could not reach neighbor {neighbor_hostname} ({neighbor_ip}) - neighbor itself may be down too."
+    except Exception as exc:
+        return f"Unexpected error connecting to neighbor {neighbor_hostname}: {exc}"
+
+    raw_ping_output = run_command(neighbor_conn, f"ping {target_ip} source {source_interface}")
+    neighbor_conn.disconnect()
+
+    summary = parse_ping_success_rate(raw_ping_output)
+    return f"{neighbor_hostname} (sourced from its {source_interface}) pinging WAN interface {target_ip} via dedicated static route: {summary}"
 
 
 def parse_recent_history(raw_log_output: str, interface: str) -> list:
@@ -432,6 +531,16 @@ def main():
             print(vrrp_output)
         except Exception as exc:
             print(f"   Could not check redundancy status: {exc}")
+
+    # Neighbor ping check - only when this specific interface is down
+    # and a neighbor/target is configured for it. Tests real WAN
+    # interface reachability via a dedicated static route (not OSPF,
+    # not the shared lab switch). Uses the same credentials already
+    # entered for the primary device.
+    neighbor_check = NEIGHBOR_PING_CHECK.get((site, hostname, interface))
+    if is_down and neighbor_check:
+        print(f"\n--- WAN interface reachability check (via dedicated static route) ---")
+        print(f"   {run_neighbor_ping_check(site, neighbor_check['neighbor'], neighbor_check['source_interface'], neighbor_check['target_ip'], username, password)}")
 
     conn.disconnect()
 
