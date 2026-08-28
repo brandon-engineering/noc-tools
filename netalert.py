@@ -15,7 +15,7 @@ if not WEBHOOK_URL:
 # Hosts that should also fire an alert into Grafana IRM (in addition to
 # Discord), for practicing the acknowledge/escalate workflow. Currently
 # scoped to just the edge routers - expand this set as needed.
-IRM_ALERT_HOSTS = {"EdgeR1", "EdgeR2"}
+IRM_ALERT_HOSTS = {"EdgeR1", "EdgeR2", "R1", "R2", "DSW1", "DSW2", "ASW1", "ASW2", "NUS1"}
 
 PATTERN = re.compile(r"%LINK-3-UPDOWN|%LINEPROTO-5-UPDOWN|%LINK-5-CHANGED")
 
