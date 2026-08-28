@@ -85,12 +85,12 @@ NEIGHBOR_PING_CHECK = {
     ("MemberA", "EdgeR1", "GigabitEthernet0/0"): {
         "neighbor": "EdgeR2",
         "source_interface": "GigabitEthernet0/2",
-        "target_ip": "10.0.0.31",
+        "target_ip": "<edgeR1-gi0/0-ip>",
     },
     ("MemberA", "EdgeR2", "GigabitEthernet0/0"): {
         "neighbor": "EdgeR1",
         "source_interface": "GigabitEthernet0/2",
-        "target_ip": "10.0.0.32",
+        "target_ip": "<edgeR2-gi0/0-ip>",
     },
 }
 
@@ -476,6 +476,10 @@ def main():
     except NetmikoTimeoutException:
         print(f"❌ Could not reach {hostname} ({host_ip}) - connection timed out.")
         print("   This itself may be meaningful - the device or its path may be down.")
+        print()
+        print("   ⚠️  Next step: PAGE NETWORK ENGINEERING.")
+        print("   This tool cannot investigate further - it requires a live SSH")
+        print("   session to the device itself, and that connection has failed.")
         sys.exit(1)
     except Exception as exc:
         print(f"❌ Unexpected error connecting to {hostname}: {exc}")
