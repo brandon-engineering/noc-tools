@@ -262,7 +262,7 @@ Protocol:  down
 
 ## Built with AI assistance
 
-The workflow design, alert logic, and operations are the author's; the
+The workflow design, the alert logic, and the operations are mine; the
 Python implementation was AI-assisted. It runs in production and does a
 real job.
 
