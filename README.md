@@ -1,21 +1,35 @@
 # NOC Tools
 
-Lightweight tooling for network alerting and on-demand interface
-investigation on Cisco IOS devices, built around a two-layer NOC
-workflow:
+A two-layer network monitoring workflow for Cisco IOS environments,
+running in production as a `systemd` service.
 
-1. **Fast, automatic alerting** (`netalert.py`) - watches syslog for
-   interface state changes and posts minimal, unambiguous alerts to
-   Discord the moment something changes.
-2. **On-demand investigation** (`noc_check.py`) - a CLI tool that
-   connects to any device, pulls live interface state, and suggests
-   a plain-language next step based on what's actually happening
-   right now (not a guess baked in at alert time).
+- **Layer 1 — `netalert.py`:** watches centralised syslog, recognises
+  interface up/down events, enriches them with fixed context (which
+  link is a WAN uplink, which is VRRP-protected), and posts to Discord
+  (every event) and Grafana IRM (core devices, for the ack/escalate
+  workflow).
+- **Layer 2 — `noc_check.py`:** an on-demand CLI. When an alert names a
+  device and interface, it opens a live SSH session and reports current
+  status, time-in-state, optical levels, recent flap history, VRRP
+  role in plain language, a neighbour-sourced reachability ping, and
+  the real carrier/circuit ID for known WAN links — then a
+  plain-language next step.
 
-Splitting these into two layers keeps alerts fast and keeps
-investigation advice accurate, since it's generated from current
-live state rather than a static assumption made when the alert
-first fired.
+## Why two layers
+
+Fast alerting and accurate investigation have opposite requirements.
+Alerting can't block on SSH; investigation can't trust a snapshot from
+minutes ago. Keeping them separate lets each do its job, and an outage
+in one never takes out the other. Investigation advice is generated
+from the device's live state at the moment a technician asks — not
+baked in when the alert fired.
+
+**Design rationale and the SNMP-polling roadmap:
+[`WRITEUP.md`](WRITEUP.md).**
+
+<!-- TODO before publishing: add screenshots to docs/ and reference
+them here — a real Discord alert, a noc_check.py run against a down
+interface, and the Grafana IRM incident view. -->
 
 ---
 
@@ -68,7 +82,8 @@ generic alert, so nothing silently fails to notify.
    ```bash
    sudo cp netalert.service /etc/systemd/system/netalert.service
    sudo nano /etc/systemd/system/netalert.service
-   # Replace REPLACE_WITH_YOUR_REAL_WEBHOOK_URL with your actual webhook
+   # Set REPLACE_WITH_YOUR_REAL_WEBHOOK_URL, REPLACE_WITH_SERVICE_USER,
+   # and the ExecStart path to wherever you cloned this repo.
    sudo systemctl daemon-reload
    sudo systemctl enable --now netalert.service
    ```
@@ -139,6 +154,22 @@ nothing is hidden if you want to dig further manually.
 | administratively down | down | Manually shut - confirm intent before changing |
 | down | down | Physically down - check cabling/remote end/carrier |
 | up | down | Link present, protocol not establishing - check encapsulation/duplex |
+
+---
+
+## Roadmap
+
+- **SNMP polling** alongside the syslog listener — poll interface
+  errors/discards, optical power, utilisation, and device health on an
+  interval, feed threshold crossings into the same alert path, and land
+  the time series in a backend. Catches slow degradation that never
+  generates a syslog event. See [`WRITEUP.md`](WRITEUP.md).
+
+## Built with AI assistance
+
+The workflow design, alert logic, and operations are the author's; the
+Python implementation was AI-assisted. It runs in production and does a
+real job.
 
 ---
 

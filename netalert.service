@@ -1,9 +1,18 @@
 [Unit]
-Description=Network syslog alert watcher
+Description=Network syslog alert watcher (netalert.py)
 After=network.target
 
 [Service]
+# Discord webhook (required). Prefer an EnvironmentFile= drop-in over a
+# literal here so the secret never lands in a file you might commit.
 Environment="DISCORD_WEBHOOK_URL=REPLACE_WITH_YOUR_REAL_WEBHOOK_URL"
-ExecStart=/usr/bin/python3 /home/netadmin/ansible/Syslog/netalert.py
+# Grafana IRM webhook (optional) - enables the acknowledge/escalate
+# path for the hosts listed in IRM_ALERT_HOSTS in netalert.py.
+#Environment="IRM_WEBHOOK_URL=REPLACE_WITH_YOUR_IRM_WEBHOOK_URL"
+ExecStart=/usr/bin/python3 /opt/noc-tools/netalert.py
 Restart=always
-User=netadmin
+RestartSec=5
+User=REPLACE_WITH_SERVICE_USER
+
+[Install]
+WantedBy=multi-user.target
