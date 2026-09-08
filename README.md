@@ -33,8 +33,9 @@ baked in when the alert fired.
 [`WRITEUP.md`](WRITEUP.md).**
 
 <!-- TODO before publishing: add screenshots to docs/ and reference
-them here — a real Discord alert, a noc_check.py run against a down
-interface, and the Grafana IRM incident view. -->
+them here — a real Discord alert and the Grafana IRM incident view.
+A representative noc_check.py run is inline under "What a run looks
+like"; swap it for a real sanitised capture. -->
 
 ---
 
@@ -43,7 +44,9 @@ interface, and the Grafana IRM incident view. -->
 - Python 3.8+
 - A Cisco IOS device configured to send syslog to a host running
   `netalert.py`
-- SSH access to devices you want to investigate with `noc_check.py`
+- SSH access to devices you want to investigate with `noc_check.py`,
+  and a per-site Ansible inventory (`inventory/<site>.yml`) it can read
+  addresses from
 
 Install dependencies:
 
@@ -116,40 +119,127 @@ events occur. Intended to run as a systemd service for production use.
 
 ## noc_check.py
 
-On-demand investigation tool. Connects to a specific device, runs
-`show interface <interface>`, and prints the live status/protocol
-state along with a suggested next step.
+On-demand investigation tool, run from a jump host or central
+controller. Give it the site, device, and interface an alert named; it
+SSHes in, gathers live state for that interface, and turns the raw
+output into a plain-language report a NOC technician can act on without
+reading IOS directly.
 
-Reads device IPs from an Ansible inventory file (`inventory/inventory.yml`,
-relative to wherever you run the script from) rather than maintaining
-a separate device list - point it at your existing Ansible inventory.
+For each run it reports:
 
-### Setup
+- **Interface status and description** — current status / line
+  protocol, parsed and labelled.
+- **Recent flap history** — up/down events for that interface pulled
+  from the device's own log buffer, most recent first.
+- **Time in current state** — how long it has actually been up or down,
+  computed from that history (and it flags the case where live state
+  and the newest log entry disagree).
+- **Optical levels** — Tx / Rx power for fibre interfaces; recognises
+  copper and "no transceiver present" cleanly.
+- **Redundancy status** — for interfaces flagged as VRRP-relevant (edge
+  and core uplinks), runs `show vrrp brief` and says in plain language
+  which router is currently active.
+- **WAN reachability** — for known WAN interfaces, has a neighbour
+  router ping the down interface over a dedicated static route, to
+  prove whether it is really passing traffic or just misreporting.
+- **A suggested next step**, plus the carrier / circuit ID to quote if
+  the link is a known WAN circuit.
 
-Edit `WAN_CIRCUIT_MAP` to add real carrier/circuit info for known
-WAN-facing interfaces, so a down/down result tells you exactly which
-circuit to reference when escalating:
+The raw `show` output is printed at the end as well, so nothing is
+hidden from someone who wants to dig further.
+
+### Scaling across sites
+
+Device addresses come from **per-site Ansible inventory files** —
+`inventory/<site>.yml` — not a list kept inside the script. One managed
+site is one inventory file; adding a site is dropping in its inventory.
+The `<site>` argument picks the file, and each client's device list
+stays isolated from every other client's.
+
+Interface-specific behaviour is configured in dictionaries at the top
+of `noc_check.py`, all keyed by `(site, hostname, interface)`:
 
 ```python
 WAN_CIRCUIT_MAP = {
-    ("EdgeR1", "GigabitEthernet0/0"): "WAN link to <Carrier> CID <circuit-id>",
+    ("MemberA", "EdgeR1", "GigabitEthernet0/0"): "WAN link to <Carrier> CID <circuit-id>",
+}
+VRRP_CHECK_ON_DOWN = {
+    ("MemberA", "EdgeR1", "GigabitEthernet0/0"): "WAN uplink down",
 }
 ```
 
 ### Run
 
 ```bash
-python3 noc_check.py <hostname> <interface>
+python3 noc_check.py <site> <hostname> <interface>
 ```
 
-Example:
+On the jump host it's wrapped in a one-word alias:
+
 ```bash
-python3 noc_check.py EdgeR1 GigabitEthernet0/0
+alias noccheck='python3 /opt/noc-tools/noc_check.py'
 ```
 
-You'll be prompted for SSH credentials. Output includes the raw
-`show interface` text as well as the parsed summary and suggestion, so
-nothing is hidden if you want to dig further manually.
+```bash
+noccheck MemberA EdgeR1 GigabitEthernet0/0
+```
+
+Run it with no arguments to be prompted for site / device / interface
+interactively. You're prompted for SSH credentials either way.
+
+### What a run looks like
+
+<!-- TODO before publishing: replace with a real sanitised capture, and
+optionally add screenshots under docs/. This block is representative. -->
+
+```text
+$ noccheck MemberA EdgeR1 GigabitEthernet0/0
+Username: noc
+Password:
+
+Connecting to EdgeR1 (<redacted>) [MemberA]...
+
+Site:      MemberA
+Device:    EdgeR1
+Interface: GigabitEthernet0/0
+Status:    down
+Protocol:  down
+
+--- Recent interface history (this device's local log) ---
+   Sep  8 13:42:11  DOWN
+   Sep  8 09:15:03  UP
+   Sep  7 22:50:47  DOWN
+   Sep  7 22:49:31  UP
+
+🔴 Interface is physically down (down/down).
+   WAN link to <Carrier> CID <circuit-id>
+   Contact carrier and reference the circuit ID above. Confirm
+   cabling and local hardware first if accessible on-site.
+
+--- Time in current state ---
+   Interface has been DOWN for 2h 18m (since Sep  8 13:42:11).
+
+--- Transceiver status ---
+   Tx Power: -2.14 dBm | Rx Power: -40.00 dBm
+
+--- Redundancy status (WAN uplink down) ---
+   EdgeR1 is currently in STANDBY for all 1 redundancy group(s) checked -
+   the other router is handling traffic instead. This appears to be
+   working as intended.
+
+--- Raw VRRP output ---
+   [ show vrrp brief ]
+
+--- WAN interface reachability check (via dedicated static route) ---
+   EdgeR2 (sourced from its GigabitEthernet0/2) pinging WAN interface
+   <redacted> via the dedicated static route: 0% success (0/5 replies) -
+   the WAN interface itself is NOT reachable over the backbone either.
+   Consistent with a genuine physical/link-layer failure, not just a
+   reporting issue.
+
+--- Raw show interface output ---
+   [ show interface GigabitEthernet0/0 ]
+```
 
 ### States it recognizes
 
