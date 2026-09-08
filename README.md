@@ -8,12 +8,17 @@ running in production as a `systemd` service.
   link is a WAN uplink, which is VRRP-protected), and posts to Discord
   (every event) and Grafana IRM (core devices, for the ack/escalate
   workflow).
-- **Layer 2 — `noc_check.py`:** an on-demand CLI. When an alert names a
-  device and interface, it opens a live SSH session and reports current
-  status, time-in-state, optical levels, recent flap history, VRRP
-  role in plain language, a neighbour-sourced reachability ping, and
-  the real carrier/circuit ID for known WAN links — then a
-  plain-language next step.
+- **Layer 2 — `noc_check.py`:** an on-demand CLI that runs from a jump
+  host / central controller. Given the device and interface an alert
+  named, it SSHes to that device, runs the relevant show commands
+  against that interface, and parses the raw output into a plain
+  reading — interface status, description, time-in-state, optical
+  levels, recent flap history, VRRP role, a neighbour-sourced
+  reachability ping, the carrier/circuit ID for known WAN links — and a
+  plain-language next step. Written for a NOC technician, or anyone who
+  can't (or shouldn't have to) interpret raw IOS output. What it checks
+  and how it maps interfaces to circuits and next steps is tunable in
+  dictionaries at the top of `noc_check.py`.
 
 ## Why two layers
 

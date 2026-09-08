@@ -33,13 +33,15 @@ Split the job into two layers that are deliberately kept apart:
                                     │  alert names a device + interface
                                     ▼
                  ┌─────────────────────────────────────────┐
-                 │   Layer 2:  noc_check.py  (run on demand) │
+                 │   Layer 2:  noc_check.py                  │
+                 │   (CLI on a jump host, run on demand)     │
                  │     • SSH to that device *now* (netmiko)  │
                  │     • show interface / show logging /     │
                  │       transceiver / show vrrp brief       │
                  │     • neighbour ping test over a          │
                  │       dedicated static route             │
-                 │     • plain-language next step + the real │
+                 │     • parse it all into plain status +    │
+                 │       description + next step, with the   │
                  │       carrier / circuit ID for that link │
                  └─────────────────────────────────────────┘
 ```
@@ -50,15 +52,20 @@ Split the job into two layers that are deliberately kept apart:
   and get a readable message in front of a human immediately. Anything
   not in the enrichment map still alerts — with a generic message —
   so nothing fails silently.
-- **Layer 2 (`noc_check.py`)** is where investigation advice is
-  generated, and it is generated from a live SSH session at the moment
-  a technician asks — current status/protocol, how long the interface
-  has held that state (computed from the device's own log buffer),
-  optical Tx/Rx levels, recent flap history, VRRP master/standby in
-  plain language, and a neighbour-sourced ping that proves whether the
-  WAN interface is actually passing traffic. If the link is a known
-  WAN circuit it prints the carrier and circuit ID to reference on the
-  escalation.
+- **Layer 2 (`noc_check.py`)** runs from a jump host / central
+  controller. A technician gives it the device and interface the alert
+  named; it SSHes to that device, runs the relevant show commands
+  against that interface, and turns the raw output into a plain
+  reading — current status and description, how long the interface has
+  held that state (computed from the device's own log buffer), optical
+  Tx/Rx levels, recent flap history, VRRP master/standby in plain
+  language, and a neighbour-sourced ping that proves whether the WAN
+  interface is actually passing traffic — ending in a plain-language
+  next step. If the link is a known WAN circuit it prints the carrier
+  and circuit ID to reference on the escalation. It's written for
+  someone who can't, or shouldn't have to, read raw IOS output; what it
+  checks and how it maps interfaces to circuits and next steps lives in
+  dictionaries at the top of the file.
 
 ## Why keep them separate
 
