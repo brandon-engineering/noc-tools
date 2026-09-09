@@ -2,10 +2,10 @@
 
 This document explains `noc_check.py`, written for someone who has
 never programmed in Python before. It assumes no prior coding
-knowledge. If you haven't read `netalert_explained.md` or
-`lab_failover_explained.md` yet, several basic concepts (imports,
-functions, variables, if/else, try/except, dictionaries, f-strings)
-are explained there in more depth - this document moves a bit faster
+knowledge. If you haven't read `netalert_explained.md` yet, several
+basic concepts (imports, functions, variables, if/else, try/except,
+dictionaries, f-strings) are explained there in more depth - this
+document moves a bit faster
 over ideas already covered in those two, since this script is the
 longest and most feature-rich of the three.
 
@@ -33,10 +33,9 @@ noc_check.py
 """
 ```
 
-Same shebang and docstring pattern explained in
-`lab_failover_explained.md` - a note to the operating system about how
-to run this file, followed by a description of what it does and how to
-use it.
+The shebang (`#!/usr/bin/env python3`) is a note to the operating
+system about how to run this file directly; the docstring below it is
+a description of what the script does and how to use it.
 
 ```python
 import sys
@@ -587,9 +586,8 @@ one at a time - `.strip()` removes any accidental extra spaces the
 user might type. Any other number of arguments means the user typed
 something unexpected, so print usage instructions and
 `sys.exit(1)` - stopping the program immediately with an exit code of
-1 (the standard way of signaling "this program ended due to an error,"
-matching the same convention explained in `lab_failover_explained.md`
-about return codes).
+1 (the standard convention: 0 means success, any non-zero value
+signals "this program ended due to an error").
 
 ```python
     host_ip = load_inventory_host(site, hostname)
@@ -672,8 +670,8 @@ if __name__ == "__main__":
     main()
 ```
 
-Same pattern explained in `lab_failover_explained.md` - only run
-`main()` if this file was executed directly.
+A standard Python pattern - only run `main()` if this file was
+executed directly, not when it's imported by another file.
 
 ---
 
