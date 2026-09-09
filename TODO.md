@@ -11,11 +11,13 @@
       gig link, or a speed that negotiated lower than expected).
       Requested 2026-09-08.
 
-## Before making the repo public
+## Housekeeping
 
-- [ ] Decide on the `<Carrier>` / `<circuit-id>` placeholders — fill
-      with a lab-safe example or leave generic.
+- [ ] `<Carrier>` / `<circuit-id>` in `README.md` / `noc_check.py` are
+      left as generic placeholders — fine as-is; revisit only if a
+      concrete example reads better.
 
-Screenshots (Discord alert, Grafana IRM) were considered and dropped —
-the inline CLI example carries the tool well enough. The "What a run
-looks like" block stays as a labelled representative example.
+Repo made public 2026-09-09. `lab_failover_explained.md` was removed
+first (it explained a script not in the repo and carried lab
+addressing). Screenshots (Discord, Grafana IRM) were considered and
+dropped — the inline CLI example carries the tool.
