@@ -32,11 +32,6 @@ baked in when the alert fired.
 **Design rationale and the SNMP-polling roadmap:
 [`WRITEUP.md`](WRITEUP.md).**
 
-<!-- TODO before publishing: add screenshots to docs/ and reference
-them here — a real Discord alert and the Grafana IRM incident view.
-A representative noc_check.py run is inline under "What a run looks
-like"; swap it for a real sanitised capture. -->
-
 ---
 
 ## Requirements
@@ -189,8 +184,8 @@ interactively. You're prompted for SSH credentials either way.
 
 ### What a run looks like
 
-<!-- TODO before publishing: replace with a real sanitised capture, and
-optionally add screenshots under docs/. This block is representative. -->
+Representative output — a WAN interface found down/down, addresses
+redacted:
 
 ```text
 $ noccheck MemberA EdgeR1 GigabitEthernet0/0

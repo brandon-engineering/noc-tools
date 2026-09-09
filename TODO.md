@@ -13,9 +13,9 @@
 
 ## Before making the repo public
 
-- [ ] `docs/` screenshots: a real Discord alert, the Grafana IRM
-      incident view.
-- [ ] Replace the "What a run looks like" block in `README.md` with a
-      real sanitised capture.
 - [ ] Decide on the `<Carrier>` / `<circuit-id>` placeholders — fill
       with a lab-safe example or leave generic.
+
+Screenshots (Discord alert, Grafana IRM) were considered and dropped —
+the inline CLI example carries the tool well enough. The "What a run
+looks like" block stays as a labelled representative example.
