@@ -167,7 +167,18 @@ def build_interface_message(host: str, interface: str, state: str) -> str:
     if friendly and state == "up":
         return (f"{icon} {host} {interface} has RECOVERED (previously flagged as down).\n"
                  f"Device: {host} | Interface: {interface} | State: UP")
-    return f"{icon} Interface event: {host} {interface} changed state to {state.upper()}"
+    if state == "down":
+        return f"{icon} Interface event: {host} {interface} changed state to DOWN"
+    # Deliberately says "RECOVERED", not just "changed state to UP" -
+    # Grafana OnCall's default webhook template appears to key off that
+    # word (or similar) to decide whether an incoming post with a
+    # matching alert_key should auto-resolve the existing alert group.
+    # Confirmed live 2026-09-11: EdgeR2 Gi0/0 (in DEVICE_INTERFACE_MAP,
+    # already said "RECOVERED") auto-resolved; DSW1 Gi0/0 (fell through
+    # to this branch, previously said only "changed state to UP") did
+    # not. Every interface needs this wording, not just the mapped few.
+    return (f"{icon} {host} {interface} has RECOVERED (previously flagged as down).\n"
+             f"Device: {host} | Interface: {interface} | State: UP")
 
 
 def send_alert(message: str, alert_key: str, noc_check_command: str = None) -> None:

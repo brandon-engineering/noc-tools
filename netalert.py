@@ -74,8 +74,19 @@ def build_message(line: str) -> Tuple[str, Optional[str]]:
         return f"{state_icon} {friendly}\nDevice: {host} | Interface: {interface} | State: DOWN", host
     elif friendly and state == "up":
         return f"{state_icon} {host} {interface} has RECOVERED (previously flagged as down).\nDevice: {host} | Interface: {interface} | State: UP", host
+    elif state == "down":
+        return f"{state_icon} Interface event: {host} {interface} changed state to DOWN", host
     else:
-        return f"{state_icon} Interface event: {host} {interface} changed state to {state.upper()}", host
+        # Deliberately says "RECOVERED", not just "changed state to UP" -
+        # Grafana OnCall's default webhook template appears to key off
+        # that word (or similar) to decide whether an incoming post with
+        # a matching alert_key should auto-resolve the existing alert
+        # group. Confirmed live 2026-09-11 via snmp_poll.py hitting the
+        # identical branch: a mapped interface's "RECOVERED" wording
+        # auto-resolved in Grafana, this un-mapped fallback's plain
+        # "changed state to UP" did not. Every interface needs this
+        # wording, not just the ones in DEVICE_INTERFACE_MAP.
+        return f"{state_icon} {host} {interface} has RECOVERED (previously flagged as down).\nDevice: {host} | Interface: {interface} | State: UP", host
 
 
 def wait_for_logfile(path: str, check_interval_seconds: int = 5) -> None:
