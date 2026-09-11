@@ -170,15 +170,14 @@ def build_interface_message(host: str, interface: str, state: str) -> str:
     return f"{icon} Interface event: {host} {interface} changed state to {state.upper()}"
 
 
-def send_alert(message: str, alert_key: str) -> None:
+def send_alert(message: str, alert_key: str, noc_check_command: str = None) -> None:
     requests.post(WEBHOOK_URL, json={"content": message})
     if IRM_WEBHOOK_URL:
+        payload = {"message": message, "alert_key": alert_key}
+        if noc_check_command:
+            payload["noc_check_command"] = noc_check_command
         try:
-            requests.post(
-                IRM_WEBHOOK_URL,
-                json={"message": message, "alert_key": alert_key},
-                timeout=5,
-            )
+            requests.post(IRM_WEBHOOK_URL, json=payload, timeout=5)
         except requests.exceptions.RequestException:
             # Don't let an IRM delivery failure interrupt Discord
             # alerting, which is the primary/already-proven channel.
@@ -215,7 +214,11 @@ def main() -> None:
             for interface, state in poll_interfaces(ip).items():
                 key = (host, interface)
                 if iface_state.get(key) is not None and state != iface_state[key]:
-                    send_alert(build_interface_message(host, interface, state), f"{host}-{interface}")
+                    send_alert(
+                        build_interface_message(host, interface, state),
+                        f"{host}-{interface}",
+                        noc_check_command=f"noccheck {site} {host} {interface}",
+                    )
                 iface_state[key] = state
 
         time.sleep(POLL_INTERVAL)
