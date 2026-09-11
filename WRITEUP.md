@@ -76,6 +76,12 @@ minutes ago. Splitting them lets each do its job well, and it means an
 alerting outage never takes down the ability to investigate, and vice
 versa.
 
+**Update:** Layer 1 is no longer just `netalert.py`. A second,
+independent alerting mechanism (`snmp_poll.py`) now exists alongside
+it — same reasoning about staying separate from investigation applies
+to it too, but it solves a different problem than the syslog listener
+does. See "What shipped since" below.
+
 ## How it runs
 
 `netalert.py` runs as a `systemd` service, restarts on failure, and
@@ -97,23 +103,51 @@ context vs. live investigation — made deliberately rather than by
 default. The investigation output also doubles as a clean starting
 point for the root-cause write-up.
 
-## In progress — SNMP polling
+## What shipped since — SNMP polling as a second alerting mechanism
 
-The pipeline today is **event-driven**: it reacts to syslog messages,
-which means it only sees things a device bothers to log — a link
-dropping, a protocol flapping. It's blind to slow degradation that
-never generates an event: interface error-rate creep, optical power
-drifting toward the margin, a circuit quietly running at capacity,
-rising CPU or memory.
+The pipeline was originally **entirely event-driven**: it only reacted
+to syslog messages, which means it only saw things a device bothered
+to log and successfully deliver. That has a real, structural blind
+spot beyond "slow degradation with no event" — it also means a device
+that goes fully unreachable, or that fails to *deliver* an event it
+tried to log (a syslog transport misconfiguration, a routing change,
+the device itself going dark), generates no alert at all. There's
+nothing for an event-driven listener to react to.
 
-The next build is **SNMP polling** alongside the syslog listener:
-poll interface counters, error and discard rates, optical levels, and
-device health on an interval; feed threshold crossings and trend
-breaks into the same alerting path (Discord + Grafana IRM); and land
-the time series in a backend so "was this interface always like this,
-or did it change last Tuesday?" becomes answerable. The goal is to
-catch the class of problem that's degrading for hours before it
-becomes an outage.
+`snmp_poll.py` closes that specific gap: instead of waiting for a
+device to say something, it asks — polling every device's reachability
+and every interface's operational state on a timer, independent of
+whatever the syslog pipeline is or isn't doing. It runs on a different
+host than the syslog collector on purpose (a box outside the network
+being watched, where practical), so the thing doing the alerting isn't
+also the thing that might go dark. Same alert destinations as
+`netalert.py` (Discord + Grafana IRM), same message conventions, and
+it hands `noc_check.py` the same kind of ready-to-run investigation
+command.
+
+This shipped as the **first, narrower slice** of the original SNMP
+idea below — reachability and up/down state, not yet the deeper
+metrics. Two real bugs surfaced building and testing it against a live
+fleet, each a useful lesson in its own right: a syslog transport
+config that silently defaulted to the wrong TCP port (nothing failed
+loudly — it just quietly never delivered anything, caught only by
+deliberately testing the alerting path rather than trusting a clean
+deploy), and a difference in message wording that determined whether
+Grafana's own alert-matching logic would auto-resolve an alert or leave
+it open forever after the underlying problem cleared.
+
+## Still ahead — the deeper SNMP-monitoring vision
+
+The original goal remains only partly built. `snmp_poll.py` today
+answers "reachable?" and "up or down?" — it doesn't yet poll interface
+error/discard counters, optical Tx/Rx power, utilization, or device
+health (CPU/memory), and there's no time-series backend, so "was this
+interface always this noisy, or did it start last Tuesday?" still
+isn't answerable. That's the harder, more valuable half of the
+original idea: catching a problem that's degrading for hours *before*
+it crosses a hard up/down line and becomes an outage — the class of
+failure that neither the syslog listener nor the current SNMP poller
+can see yet.
 
 ## A note on how this was built
 
