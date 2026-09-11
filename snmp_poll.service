@@ -1,0 +1,28 @@
+[Unit]
+Description=SNMP interface/reachability poller (snmp_poll.py)
+After=network-online.target
+Wants=network-online.target
+# This does NOT guarantee the CML VPN (tun0) is up - that's brought up
+# manually (`vpnc cml`) and systemd has no visibility into it. If tun0
+# isn't up when this starts, every host will look unreachable on the
+# first poll - harmless (no alert fires on a first observation, only
+# on a state CHANGE), but worth knowing before you go looking for a
+# bug that isn't one.
+
+[Service]
+# Discord webhook (required). Prefer an EnvironmentFile= drop-in over a
+# literal here so the secret never lands in a file you might commit.
+Environment="DISCORD_WEBHOOK_URL=REPLACE_WITH_YOUR_REAL_WEBHOOK_URL"
+# Grafana IRM webhook (optional).
+#Environment="IRM_WEBHOOK_URL=REPLACE_WITH_YOUR_IRM_WEBHOOK_URL"
+# Poll interval in seconds (default 60 if unset). 5s is a testing
+# value - dial this back up for steady-state running.
+#Environment="SNMP_POLL_INTERVAL=60"
+WorkingDirectory=/home/REPLACE_WITH_YOUR_USER/ansible
+ExecStart=/usr/bin/python3 -u /home/REPLACE_WITH_YOUR_USER/noc-tools/snmp_poll.py MemberA
+Restart=always
+RestartSec=5
+User=REPLACE_WITH_SERVICE_USER
+
+[Install]
+WantedBy=multi-user.target
