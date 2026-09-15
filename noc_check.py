@@ -485,68 +485,73 @@ def main():
         print(f"❌ Unexpected error connecting to {hostname}: {exc}")
         sys.exit(1)
 
-    raw_interface_output = run_command(conn, f"show interface {interface}")
-    state = parse_state(raw_interface_output)
+    try:
+        raw_interface_output = run_command(conn, f"show interface {interface}")
+        state = parse_state(raw_interface_output)
 
-    print(f"\nSite:      {site}")
-    print(f"Device:    {hostname}")
-    print(f"Interface: {interface}")
-    print(f"Status:    {state['status']}")
-    print(f"Protocol:  {state['protocol']}")
+        print(f"\nSite:      {site}")
+        print(f"Device:    {hostname}")
+        print(f"Interface: {interface}")
+        print(f"Status:    {state['status']}")
+        print(f"Protocol:  {state['protocol']}")
 
-    # Recent flap history from the device's own local log buffer -
-    # gathered and shown unconditionally (up/up included), so a tech
-    # can rule out a false alert by seeing there's been no recent
-    # flapping, not just when something is currently down.
-    print("\n--- Recent interface history (this device's local log) ---")
-    raw_log_output = run_command(conn, f"show logging | include {interface}")
-    recent_events = parse_recent_history(raw_log_output, interface)
-    if recent_events:
-        for event in recent_events:
-            print(f"   {event}")
-    else:
-        print("   No recent up/down events found in this device's local log buffer.")
+        # Recent flap history from the device's own local log buffer -
+        # gathered and shown unconditionally (up/up included), so a tech
+        # can rule out a false alert by seeing there's been no recent
+        # flapping, not just when something is currently down.
+        print("\n--- Recent interface history (this device's local log) ---")
+        raw_log_output = run_command(conn, f"show logging | include {interface}")
+        recent_events = parse_recent_history(raw_log_output, interface)
+        if recent_events:
+            for event in recent_events:
+                print(f"   {event}")
+        else:
+            print("   No recent up/down events found in this device's local log buffer.")
 
-    print()
-    print(suggest_next_step(state, site, hostname, interface))
+        print()
+        print(suggest_next_step(state, site, hostname, interface))
 
-    # Real elapsed time in current state, calculated from the most
-    # recent matching event above - not just raw IOS text, and shown
-    # regardless of up or down.
-    current_state_word = "up" if state["protocol"] == "up" and state["status"] == "up" else "down"
-    print("\n--- Time in current state ---")
-    print(f"   {calculate_duration_in_state(recent_events, current_state_word)}")
+        # Real elapsed time in current state, calculated from the most
+        # recent matching event above - not just raw IOS text, and shown
+        # regardless of up or down.
+        current_state_word = "up" if state["protocol"] == "up" and state["status"] == "up" else "down"
+        print("\n--- Time in current state ---")
+        print(f"   {calculate_duration_in_state(recent_events, current_state_word)}")
 
-    # Transceiver / optical light levels
-    print("\n--- Transceiver status ---")
-    raw_transceiver_output = run_command(conn, f"show interfaces {interface} transceiver detail")
-    print(f"   {parse_transceiver_summary(raw_transceiver_output)}")
+        # Transceiver / optical light levels
+        print("\n--- Transceiver status ---")
+        raw_transceiver_output = run_command(conn, f"show interfaces {interface} transceiver detail")
+        print(f"   {parse_transceiver_summary(raw_transceiver_output)}")
 
-    # VRRP / redundancy check, only when this specific interface is
-    # known to matter for a redundancy relationship and is down
-    is_down = state["status"] in ("down", "administratively down") or state["protocol"] == "down"
-    context_note = VRRP_CHECK_ON_DOWN.get((site, hostname, interface))
-    if is_down and context_note:
-        print(f"\n--- Redundancy status ({context_note}) ---")
-        try:
-            vrrp_output = run_command(conn, "show vrrp brief")
-            print(describe_vrrp_status(vrrp_output, hostname))
-            print("\n--- Raw VRRP output ---")
-            print(vrrp_output)
-        except Exception as exc:
-            print(f"   Could not check redundancy status: {exc}")
+        # VRRP / redundancy check, only when this specific interface is
+        # known to matter for a redundancy relationship and is down
+        is_down = state["status"] in ("down", "administratively down") or state["protocol"] == "down"
+        context_note = VRRP_CHECK_ON_DOWN.get((site, hostname, interface))
+        if is_down and context_note:
+            print(f"\n--- Redundancy status ({context_note}) ---")
+            try:
+                vrrp_output = run_command(conn, "show vrrp brief")
+                print(describe_vrrp_status(vrrp_output, hostname))
+                print("\n--- Raw VRRP output ---")
+                print(vrrp_output)
+            except Exception as exc:
+                print(f"   Could not check redundancy status: {exc}")
 
-    # Neighbor ping check - only when this specific interface is down
-    # and a neighbor/target is configured for it. Tests real WAN
-    # interface reachability via a dedicated static route (not OSPF,
-    # not the shared lab switch). Uses the same credentials already
-    # entered for the primary device.
-    neighbor_check = NEIGHBOR_PING_CHECK.get((site, hostname, interface))
-    if is_down and neighbor_check:
-        print(f"\n--- WAN interface reachability check (via dedicated static route) ---")
-        print(f"   {run_neighbor_ping_check(site, neighbor_check['neighbor'], neighbor_check['source_interface'], neighbor_check['target_ip'], username, password)}")
-
-    conn.disconnect()
+        # Neighbor ping check - only when this specific interface is down
+        # and a neighbor/target is configured for it. Tests real WAN
+        # interface reachability via a dedicated static route (not OSPF,
+        # not the shared lab switch). Uses the same credentials already
+        # entered for the primary device.
+        neighbor_check = NEIGHBOR_PING_CHECK.get((site, hostname, interface))
+        if is_down and neighbor_check:
+            print(f"\n--- WAN interface reachability check (via dedicated static route) ---")
+            print(f"   {run_neighbor_ping_check(site, neighbor_check['neighbor'], neighbor_check['source_interface'], neighbor_check['target_ip'], username, password)}")
+    finally:
+        # Guarantees the vty line is freed even if something above
+        # throws on unexpected device output - an unhandled crash here
+        # used to leak the session until the router's own exec-timeout
+        # cleared it.
+        conn.disconnect()
 
     print("\n--- Raw show interface output ---")
     print(raw_interface_output)

@@ -376,6 +376,11 @@ Protocol:  down
 | down | down | Physically down - check cabling/remote end/carrier |
 | up | down | Link present, protocol not establishing - check encapsulation/duplex |
 
+**Hitting an SSH connection problem against a lab device (timeout,
+refused, or an auth/login error) — whether from `noc_check.py`, an
+Ansible playbook, or a manual `ssh`? See
+[`SSH_TROUBLESHOOTING.md`](SSH_TROUBLESHOOTING.md).**
+
 ---
 
 ## Roadmap
