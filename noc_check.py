@@ -51,16 +51,22 @@ WAN_CIRCUIT_MAP = {
 # context note explaining what this specific link's failure means.
 #
 # - EdgeR1/EdgeR2 Gi0/0 (WAN uplink down) -> checks EdgeR1/EdgeR2's
-#   own VRRP (their Gi0/2 backbone relationship) to confirm which
-#   EdgeRouter is currently handling traffic.
-# - R1/R2 Gi0/0 (PTP link to EdgeRouter down) -> checks R1/R2's own
-#   VRRP (their VLAN 10/20/30/99 relationship) to confirm which
-#   inner router is currently handling traffic.
+#   own VRRP (their outside Gi0/0 relationship, vrrp_vip 10.10.70.14)
+#   to confirm which EdgeRouter is currently handling traffic.
+# - DSW1/DSW2 Gi0/3 (VRRP backbone link down) -> checks DSW1/DSW2's
+#   own VRRP (their area-1 VLAN 10/30/99 relationship) to confirm
+#   which distribution switch is currently master.
+#
+# (Previously had R1/R2 Gi0/0 entries here from an earlier topology
+# where R1/R2 were the inner VRRP pair - stale since R1/R2 moved to
+# inventory/bgp_peers.yml as simulated-internet eBGP peers with no
+# VRRP config of their own. Same concept, now pointed at the actual
+# VRRP pair per inventory/MemberA.yml.)
 VRRP_CHECK_ON_DOWN = {
     ("MemberA", "EdgeR1", "GigabitEthernet0/0"): "WAN uplink down",
     ("MemberA", "EdgeR2", "GigabitEthernet0/0"): "WAN uplink down",
-    ("MemberA", "R1", "GigabitEthernet0/0"): "PTP link to EdgeR1 down",
-    ("MemberA", "R2", "GigabitEthernet0/0"): "PTP link to EdgeR2 down",
+    ("MemberA", "DSW1", "GigabitEthernet0/3"): "VRRP backbone link down",
+    ("MemberA", "DSW2", "GigabitEthernet0/3"): "VRRP backbone link down",
 }
 
 # Maps a specific WAN-facing interface (site, hostname, interface) to
