@@ -50,23 +50,66 @@ WAN_CIRCUIT_MAP = {
 # is currently master in plain language. Each entry maps to a short
 # context note explaining what this specific link's failure means.
 #
-# - EdgeR1/EdgeR2 Gi0/0 (WAN uplink down) -> checks EdgeR1/EdgeR2's
-#   own VRRP (their outside Gi0/0 relationship, vrrp_vip 10.10.70.14)
-#   to confirm which EdgeRouter is currently handling traffic.
-# - DSW1/DSW2 Gi0/3 (VRRP backbone link down) -> checks DSW1/DSW2's
-#   own VRRP (their area-1 VLAN 10/30/99 relationship) to confirm
-#   which distribution switch is currently master.
+# Currently empty - no interface in this topology maps cleanly to a
+# VRRP check yet:
+# - EdgeR1/EdgeR2 Gi0/0 (outside) DOES run VRRP (vrrp_vip 10.10.70.14,
+#   per inventory/MemberA.yml), but per design discussion, EdgeR1/
+#   EdgeR2 -> unmanaged switch -> single Excon is a lab stand-in for
+#   two SEPARATE ISP circuits, one per router - not a real redundant
+#   pair. VRRP failover between them isn't a meaningful signal here,
+#   so it's deliberately not monitored. Their Gi0/2 backbone link's
+#   real redundancy signal is the iBGP session below instead -
+#   BGP_NEIGHBOR_CHECK_ON_DOWN.
+# - DSW1/DSW2 DO run real VRRP (area-1 VLANs 10/30/99), but on SVIs
+#   reached via the trunk to the access switches, not on their Gi0/3
+#   backbone link or Gi0/0 uplink - neither physical interface is a
+#   valid trigger for it. That backbone link's own protocol
+#   relationship is OSPF - see OSPF_NEIGHBOR_CHECK_ON_DOWN below.
 #
-# (Previously had R1/R2 Gi0/0 entries here from an earlier topology
-# where R1/R2 were the inner VRRP pair - stale since R1/R2 moved to
-# inventory/bgp_peers.yml as simulated-internet eBGP peers with no
-# VRRP config of their own. Same concept, now pointed at the actual
-# VRRP pair per inventory/MemberA.yml.)
-VRRP_CHECK_ON_DOWN = {
-    ("MemberA", "EdgeR1", "GigabitEthernet0/0"): "WAN uplink down",
-    ("MemberA", "EdgeR2", "GigabitEthernet0/0"): "WAN uplink down",
-    ("MemberA", "DSW1", "GigabitEthernet0/3"): "VRRP backbone link down",
-    ("MemberA", "DSW2", "GigabitEthernet0/3"): "VRRP backbone link down",
+# Mechanism kept (not deleted) since a real per-VLAN-SVI VRRP check
+# for DSW1/DSW2 is a plausible near-term addition.
+VRRP_CHECK_ON_DOWN = {}
+
+# Interfaces where a down/down result should also trigger a live
+# "show ip ospf neighbor" check on the SAME device, to report whether
+# a specific peer is still an OSPF neighbor. Unlike VRRP, downing one
+# of these links has a direct 1:1 effect: the two devices stop being
+# OSPF neighbors over it, full stop - there's no "master/backup" state
+# to report, just whether the adjacency in `peer_router_id` still
+# shows up in the neighbor table.
+#
+# - DSW1/DSW2 Gi0/3 - the OSPF backbone point-to-point link between
+#   them (10.20.1.6/10.20.1.7, per inventory/MemberA.yml). peer_router_id
+#   is the peer's OSPF RID, which in this lab matches its loopback.
+# - EdgeR1 Gi0/1 <-> DSW1 Gi0/0, and EdgeR2 Gi0/1 <-> DSW2 Gi0/0 - the
+#   area0_links/uplink point-to-point pairs joining each edge router
+#   to its distribution switch (10.20.1.0/10.20.1.1 and
+#   10.20.1.2/10.20.1.3, per inventory/MemberA.yml).
+OSPF_NEIGHBOR_CHECK_ON_DOWN = {
+    ("MemberA", "DSW1", "GigabitEthernet0/3"): {"peer": "DSW2", "peer_router_id": "10.20.0.6"},
+    ("MemberA", "DSW2", "GigabitEthernet0/3"): {"peer": "DSW1", "peer_router_id": "10.20.0.5"},
+    ("MemberA", "EdgeR1", "GigabitEthernet0/1"): {"peer": "DSW1", "peer_router_id": "10.20.0.5"},
+    ("MemberA", "DSW1", "GigabitEthernet0/0"): {"peer": "EdgeR1", "peer_router_id": "10.20.0.1"},
+    ("MemberA", "EdgeR2", "GigabitEthernet0/1"): {"peer": "DSW2", "peer_router_id": "10.20.0.6"},
+    ("MemberA", "DSW2", "GigabitEthernet0/0"): {"peer": "EdgeR2", "peer_router_id": "10.20.0.2"},
+}
+
+# Interfaces where a down/down result should also trigger a live
+# "show ip bgp summary" check on the SAME device, to report whether a
+# specific iBGP peer is still Established. Same 1:1-effect reasoning
+# as OSPF_NEIGHBOR_CHECK_ON_DOWN above, just for BGP's session state
+# instead of an OSPF adjacency.
+#
+# - EdgeR1/EdgeR2 Gi0/2 - the same physical backbone link OSPF area 0
+#   already rides, but the chosen redundancy-check signal for this
+#   pair is the iBGP session configured over it (bgp/edge_ibgp_backbone.yml,
+#   added 2026-09-15), not OSPF - see the VRRP_CHECK_ON_DOWN comment
+#   above for why VRRP was ruled out. peer_ip is the peer's Gi0/2
+#   address (the iBGP session is peered directly over this link, not
+#   the loopback - see ibgp: in inventory/MemberA.yml).
+BGP_NEIGHBOR_CHECK_ON_DOWN = {
+    ("MemberA", "EdgeR1", "GigabitEthernet0/2"): {"peer": "EdgeR2", "peer_ip": "10.20.1.5"},
+    ("MemberA", "EdgeR2", "GigabitEthernet0/2"): {"peer": "EdgeR1", "peer_ip": "10.20.1.4"},
 }
 
 # Maps a specific WAN-facing interface (site, hostname, interface) to
@@ -103,6 +146,24 @@ NEIGHBOR_PING_CHECK = {
 # How many recent up/down events to show from the device's own local
 # log buffer.
 RECENT_HISTORY_COUNT = 10
+
+# Local append-only record of every noc_check.py run - who ran it,
+# against what, and when. Independent of Discord/Grafana, so it
+# answers "when was this actually checked" even if an alert's timeline
+# in Grafana gets resolved/edited later. Not committed - see
+# .gitignore.
+HISTORY_LOG = "noc_check_history.log"
+
+
+def log_check_run(timestamp: str, site: str, hostname: str, interface: str, username: str) -> None:
+    """Append one line recording this invocation. Best-effort - a
+    logging failure (e.g. read-only filesystem) shouldn't block a
+    technician from actually running the check."""
+    try:
+        with open(HISTORY_LOG, "a") as f:
+            f.write(f"{timestamp}\t{username}\t{site}\t{hostname}\t{interface}\n")
+    except OSError:
+        pass
 
 
 def list_available_sites() -> list:
@@ -397,6 +458,53 @@ def describe_vrrp_status(raw_vrrp_output: str, hostname: str) -> str:
     )
 
 
+def describe_ospf_neighbor_status(raw_ospf_output: str, peer_router_id: str, peer_hostname: str) -> str:
+    """Translate 'show ip ospf neighbor' output into a plain-language
+    statement of whether a specific peer is still an OSPF neighbor.
+    IOS only lists neighbors it currently has an adjacency with, so a
+    peer that's dropped off this link simply won't appear at all -
+    there's no explicit 'down' state to look for, only absence."""
+    match = re.search(rf"{re.escape(peer_router_id)}\s+\d+\s+(\S+)", raw_ospf_output)
+    if match:
+        return (
+            f"   {peer_hostname} ({peer_router_id}) is still an OSPF neighbor, "
+            f"state {match.group(1)} - adjacency is up, likely via an alternate "
+            f"path. Confirm which interface it's reached over in the raw output "
+            f"below."
+        )
+    return (
+        f"   {peer_hostname} ({peer_router_id}) does not appear in the OSPF "
+        f"neighbor table at all - adjacency over this link is down, consistent "
+        f"with the interface state above."
+    )
+
+
+def describe_bgp_neighbor_status(raw_bgp_output: str, peer_ip: str, peer_hostname: str) -> str:
+    """Translate 'show ip bgp summary' output into a plain-language
+    statement of whether a specific BGP neighbor is Established.
+    Unlike OSPF, a down BGP session still shows a row for the
+    neighbor - the last column is either a received-prefix count
+    (Established) or a state name (Idle/Active/Connect/OpenSent/...)
+    when it isn't up."""
+    match = re.search(rf"^{re.escape(peer_ip)}\s+.*?(\S+)\s*$", raw_bgp_output, re.MULTILINE)
+    if not match:
+        return (
+            f"   {peer_hostname} ({peer_ip}) does not appear in the BGP table at "
+            f"all - the neighbor statement may be missing, or the session has "
+            f"never come up."
+        )
+    last_field = match.group(1)
+    if last_field.isdigit():
+        return (
+            f"   {peer_hostname} ({peer_ip}) BGP session is Established "
+            f"({last_field} prefix(es) received) - the iBGP session is up."
+        )
+    return (
+        f"   {peer_hostname} ({peer_ip}) BGP session is down - state: "
+        f"{last_field}, consistent with the interface state above."
+    )
+
+
 def suggest_next_step(state: dict, site: str, hostname: str, interface: str) -> str:
     """Return a plain-language suggested next step based on live
     interface state."""
@@ -421,6 +529,23 @@ def suggest_next_step(state: dict, site: str, hostname: str, interface: str) -> 
                 f"   {circuit}\n"
                 f"   Contact carrier and reference the circuit ID above. Confirm\n"
                 f"   cabling and local hardware first if accessible on-site."
+            )
+        ospf_link = OSPF_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
+        if ospf_link:
+            return (
+                f"🔴 OSPF adjacency to {ospf_link['peer']} is down (down/down).\n"
+                f"   {hostname} and {ospf_link['peer']} are no longer OSPF\n"
+                f"   neighbors over this backbone link - see live OSPF neighbor\n"
+                f"   status below.\n"
+                f"   Escalate to a Network Engineer."
+            )
+        bgp_link = BGP_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
+        if bgp_link:
+            return (
+                f"🔴 iBGP session to {bgp_link['peer']} is down (down/down).\n"
+                f"   {hostname} and {bgp_link['peer']} are no longer BGP peers\n"
+                f"   over this backbone link - see live BGP session status below.\n"
+                f"   Escalate to a Network Engineer."
             )
         return (
             "🔴 Interface is physically down (down/down).\n"
@@ -472,6 +597,9 @@ def main():
     username = input("Username: ")
     password = getpass.getpass("Password: ")
 
+    run_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_check_run(run_timestamp, site, hostname, interface, username)
+
     print(f"\nConnecting to {hostname} ({host_ip}) [{site}]...")
 
     try:
@@ -498,6 +626,7 @@ def main():
         print(f"\nSite:      {site}")
         print(f"Device:    {hostname}")
         print(f"Interface: {interface}")
+        print(f"Checked:   {run_timestamp} (by {username})")
         print(f"Status:    {state['status']}")
         print(f"Protocol:  {state['protocol']}")
 
@@ -542,6 +671,32 @@ def main():
                 print(vrrp_output)
             except Exception as exc:
                 print(f"   Could not check redundancy status: {exc}")
+
+        # OSPF adjacency check, only when this specific interface is a
+        # known OSPF backbone link between two devices and is down
+        ospf_check = OSPF_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
+        if is_down and ospf_check:
+            print(f"\n--- OSPF adjacency status ({ospf_check['peer']} via {interface}) ---")
+            try:
+                ospf_output = run_command(conn, "show ip ospf neighbor")
+                print(describe_ospf_neighbor_status(ospf_output, ospf_check["peer_router_id"], ospf_check["peer"]))
+                print("\n--- Raw OSPF neighbor output ---")
+                print(ospf_output)
+            except Exception as exc:
+                print(f"   Could not check OSPF adjacency status: {exc}")
+
+        # BGP session check, only when this specific interface is a
+        # known iBGP-bearing backbone link between two devices and is down
+        bgp_check = BGP_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
+        if is_down and bgp_check:
+            print(f"\n--- BGP session status ({bgp_check['peer']} via {interface}) ---")
+            try:
+                bgp_output = run_command(conn, "show ip bgp summary")
+                print(describe_bgp_neighbor_status(bgp_output, bgp_check["peer_ip"], bgp_check["peer"]))
+                print("\n--- Raw BGP summary output ---")
+                print(bgp_output)
+            except Exception as exc:
+                print(f"   Could not check BGP session status: {exc}")
 
         # Neighbor ping check - only when this specific interface is down
         # and a neighbor/target is configured for it. Tests real WAN

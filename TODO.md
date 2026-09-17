@@ -2,15 +2,30 @@
 
 ## noc_check.py — features
 
-- [ ] **OSPF/BGP adjacency checks for internal links.** EdgeR1/EdgeR2's
-      backbone links (Gi0/1 to DSW1/DSW2, Gi0/2 to each other) and
-      their eBGP links to R1/R2 (Gi0/3), plus DSW1/DSW2's uplinks to
-      the edge routers (Gi0/0), have no interface-specific logic yet -
-      they get only the generic status/log/transceiver output. Add an
-      OSPF-neighbor-style check (parallel to `VRRP_CHECK_ON_DOWN`) once
-      BGP/OSPF monitoring is actually wanted; not needed yet since NOC
-      alerting today is escalate-to-engineer once a link is correctly
-      labeled, not deep protocol diagnosis. Requested 2026-09-14.
+- [ ] **Auto-check the far end of a backbone link.** When a link in
+      `OSPF_NEIGHBOR_CHECK_ON_DOWN` (DSW1/DSW2 Gi0/3) or
+      `BGP_NEIGHBOR_CHECK_ON_DOWN` (EdgeR1/EdgeR2 Gi0/2) comes back
+      down/down, also connect to the `peer` device and check its
+      corresponding interface state directly - same idea as
+      `NEIGHBOR_PING_CHECK` for WAN links, but checking the actual
+      other end of the same physical link instead of a third device.
+      Lets a single check (e.g. `noc_check.py MemberA DSW1
+      GigabitEthernet0/3`) tell a tech whether this is a local port
+      failure or the whole link is down on both sides, without a
+      second manual check. Requested 2026-09-15.
+
+- [ ] **OSPF/BGP adjacency checks for the remaining internal links.**
+      EdgeR1/EdgeR2's backbone link to DSW1/DSW2 (Gi0/1) and their eBGP
+      links to R1/R2 (Gi0/3), plus DSW1/DSW2's uplinks to the edge
+      routers (Gi0/0), still have no interface-specific logic. DSW1/
+      DSW2's Gi0/3 (OSPF, `OSPF_NEIGHBOR_CHECK_ON_DOWN`) and EdgeR1/
+      EdgeR2's Gi0/2 (iBGP, `BGP_NEIGHBOR_CHECK_ON_DOWN`, plus the
+      matching `LINK_PAIR_MAP` entry in netalert.py/snmp_poll.py for
+      one consolidated alert) are both done as of 2026-09-15. Extend
+      the same pattern to the rest once BGP/OSPF monitoring is wanted
+      more broadly; not needed yet since NOC alerting today is
+      escalate-to-engineer once a link is correctly labeled, not deep
+      protocol diagnosis. Requested 2026-09-14.
 
 - [ ] **Speed and duplex in the plain-text output.** Parse speed
       (e.g. `1000Mb/s`, `10Gb/s`, `Auto`) and duplex (`Full`, `Half`,

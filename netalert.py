@@ -44,13 +44,121 @@ PARSE_PATTERN = re.compile(
 DEVICE_INTERFACE_MAP = {
     ("EdgeR1", "GigabitEthernet0/0"): "EdgeR1 internet uplink is affected - verify ISP/WAN path.",
     ("EdgeR2", "GigabitEthernet0/0"): "EdgeR2 internet uplink is affected - verify ISP/WAN path.",
-    ("EdgeR1", "GigabitEthernet0/2"): "EdgeR1-EdgeR2 backbone link is affected - VRRP failover in use, verify EdgeR2.",
-    ("EdgeR2", "GigabitEthernet0/2"): "EdgeR1-EdgeR2 backbone link is affected - VRRP failover in use, verify EdgeR1.",
     ("R1", "GigabitEthernet0/0"): "R1 uplink to EdgeR1 is affected - verify WAN path.",
     ("R2", "GigabitEthernet0/0"): "R2 uplink to EdgeR2 is affected - verify WAN path.",
     ("R1", "GigabitEthernet0/1"): "R1 link to DSW1 is affected - VRRP should be handling failover, verify R2 is active.",
     ("R2", "GigabitEthernet0/1"): "R2 link to DSW2 is affected - VRRP should be handling failover, verify R1 is active.",
 }
+
+# Interface pairs that are actually two ends of the SAME physical
+# link, not two independent events - a real link failure (as opposed
+# to a one-sided port fault) makes both ends log a state change within
+# moments of each other, which would otherwise become two separate
+# alerts (or with snmp_poll.py also running against the same devices,
+# four) for one underlying failure. Each entry maps one side to the
+# other, a canonical link_id shared by both sides (so both keys
+# de-duplicate into the same alert regardless of which side's syslog
+# line arrives first), a `label` naming the protocol relationship this
+# link is actually monitored by (used as both the message prefix and
+# the Grafana title - see build_link_message), and the ready-to-run
+# noc_check.py command (either device works - the check queries both
+# ends' state either way).
+LINK_PAIR_MAP = {
+    ("DSW1", "GigabitEthernet0/3"): {
+        "peer_host": "DSW2",
+        "peer_interface": "GigabitEthernet0/3",
+        "link_id": "DSW1-DSW2-backbone",
+        "label": "OSPF neighbor",
+        "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
+        "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
+    },
+    ("DSW2", "GigabitEthernet0/3"): {
+        "peer_host": "DSW1",
+        "peer_interface": "GigabitEthernet0/3",
+        "link_id": "DSW1-DSW2-backbone",
+        "label": "OSPF neighbor",
+        "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
+        "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
+    },
+    ("EdgeR1", "GigabitEthernet0/2"): {
+        "peer_host": "EdgeR2",
+        "peer_interface": "GigabitEthernet0/2",
+        "link_id": "EdgeR1-EdgeR2-backbone",
+        "label": "iBGP session",
+        "detail": "EdgeR1 <-> EdgeR2 iBGP session down - check backbone link Gi0/2.",
+        "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/2",
+    },
+    ("EdgeR2", "GigabitEthernet0/2"): {
+        "peer_host": "EdgeR1",
+        "peer_interface": "GigabitEthernet0/2",
+        "link_id": "EdgeR1-EdgeR2-backbone",
+        "label": "iBGP session",
+        "detail": "EdgeR1 <-> EdgeR2 iBGP session down - check backbone link Gi0/2.",
+        "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/2",
+    },
+    ("EdgeR1", "GigabitEthernet0/1"): {
+        "peer_host": "DSW1",
+        "peer_interface": "GigabitEthernet0/0",
+        "link_id": "EdgeR1-DSW1-uplink",
+        "label": "OSPF neighbor",
+        "detail": "EdgeR1 <-> DSW1 adjacency down - check uplink Gi0/1 (EdgeR1) / Gi0/0 (DSW1).",
+        "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/1",
+    },
+    ("DSW1", "GigabitEthernet0/0"): {
+        "peer_host": "EdgeR1",
+        "peer_interface": "GigabitEthernet0/1",
+        "link_id": "EdgeR1-DSW1-uplink",
+        "label": "OSPF neighbor",
+        "detail": "EdgeR1 <-> DSW1 adjacency down - check uplink Gi0/1 (EdgeR1) / Gi0/0 (DSW1).",
+        "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/1",
+    },
+    ("EdgeR2", "GigabitEthernet0/1"): {
+        "peer_host": "DSW2",
+        "peer_interface": "GigabitEthernet0/0",
+        "link_id": "EdgeR2-DSW2-uplink",
+        "label": "OSPF neighbor",
+        "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
+        "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
+    },
+    ("DSW2", "GigabitEthernet0/0"): {
+        "peer_host": "EdgeR2",
+        "peer_interface": "GigabitEthernet0/1",
+        "link_id": "EdgeR2-DSW2-uplink",
+        "label": "OSPF neighbor",
+        "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
+        "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
+    },
+}
+
+# How long to suppress a second alert for the same link_id + state -
+# long enough to absorb the peer device's matching syslog line
+# arriving a few seconds later, short enough not to swallow a genuine
+# second failure minutes later.
+LINK_SUPPRESS_WINDOW_SECONDS = 15
+_recent_link_alerts = {}  # link_id -> (state, timestamp)
+
+
+def already_alerted_for_link(link_id: str, state: str) -> bool:
+    """True if this exact link_id + state was already alerted on
+    within the suppression window - folds the peer device's matching
+    event for the same physical failure into a no-op instead of a
+    duplicate alert. Records this call as the latest alert otherwise,
+    so the next call (from either side) starts a fresh window."""
+    last = _recent_link_alerts.get(link_id)
+    if last and last[0] == state and (time.time() - last[1]) < LINK_SUPPRESS_WINDOW_SECONDS:
+        return True
+    _recent_link_alerts[link_id] = (state, time.time())
+    return False
+
+
+def build_link_message(pair: dict, state: str) -> str:
+    """Single consolidated message for a link defined in
+    LINK_PAIR_MAP, representing both physical ends as one logical
+    event instead of two per-device interface events."""
+    icon = "🔴" if state == "down" else "🟢"
+    if state == "down":
+        return f"{icon} {pair['label']} down: {pair['detail']}"
+    return f"{icon} {pair['label']} RECOVERED: {pair['detail']} (previously flagged as down)."
 
 
 def build_message(line: str) -> Tuple[str, Optional[str]]:
@@ -106,12 +214,38 @@ wait_for_logfile(LOGFILE)
 proc = subprocess.Popen(["tail", "-F", LOGFILE], stdout=subprocess.PIPE, text=True)
 for line in proc.stdout:
     if PATTERN.search(line):
+        match = PARSE_PATTERN.search(line)
+        pair = LINK_PAIR_MAP.get((match.group("host"), match.group("interface"))) if match else None
+
+        if pair:
+            state = match.group("state").lower()
+            if already_alerted_for_link(pair["link_id"], state):
+                continue  # peer device's matching event for this same link - already alerted
+            message = build_link_message(pair, state)
+            requests.post(WEBHOOK_URL, json={"content": message})
+            if IRM_WEBHOOK_URL:
+                try:
+                    requests.post(
+                        IRM_WEBHOOK_URL,
+                        json={
+                            "title": f"{pair['label']} DOWN" if state == "down" else f"{pair['label']} RECOVERED",
+                            "message": message,
+                            "alert_key": f"link-{pair['link_id']}",
+                            "noc_check_command": pair["noc_check_command"],
+                        },
+                        timeout=5,
+                    )
+                except requests.exceptions.RequestException:
+                    # Don't let an IRM delivery failure interrupt Discord
+                    # alerting, which is the primary/already-proven channel.
+                    pass
+            continue
+
         message, host = build_message(line)
         requests.post(WEBHOOK_URL, json={"content": message})
 
         if IRM_WEBHOOK_URL and host in IRM_ALERT_HOSTS:
             try:
-                match = PARSE_PATTERN.search(line)
                 interface = match.group("interface") if match else "unknown"
                 alert_key = f"{host}-{interface}"
                 noc_check_command = f"noccheck MemberA {host} {interface}"
