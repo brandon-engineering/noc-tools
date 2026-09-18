@@ -335,9 +335,21 @@ def main() -> None:
             if device_up[host] is not None and reachable != device_up[host]:
                 state = "up" if reachable else "down"
                 icon = "🟢" if reachable else "🔴"
-                verb = "is responding to SNMP again (previously unreachable)" if reachable \
+                # Must say "RECOVERED" - Grafana OnCall's auto-resolve
+                # keys off that word in the message, same gotcha as
+                # build_interface_message()/build_link_message() below
+                # (RCA 2026-09-11-003). This device-level check is a
+                # separate code path from those and missed that fix
+                # originally - confirmed live 2026-09-19, alert groups
+                # #131-136 got a recovery alert grouped in but never
+                # auto-resolved.
+                verb = "has RECOVERED (previously unreachable)" if reachable \
                     else "stopped responding to SNMP entirely — check reachability"
-                send_alert(f"{icon} {host} {verb}.", f"{host}-snmp-device")
+                send_alert(
+                    f"{icon} {host} {verb}.",
+                    f"{host}-snmp-device",
+                    title=f"{host} SNMP DOWN" if state == "down" else f"{host} SNMP RECOVERED",
+                )
             device_up[host] = reachable
 
             if not reachable:
