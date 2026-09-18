@@ -75,28 +75,16 @@ OPER_STATUS_UP = {"up", "1"}
 # Duplicated from netalert.py's DEVICE_INTERFACE_MAP - see this file's
 # docstring for why it isn't a shared import.
 #
-# The backbone/uplink interfaces below used to be consolidated into
-# link-pair alerts (LINK_PAIR_MAP, removed 2026-09-18) labeled "OSPF
-# neighbor"/"iBGP session" - but that inferred protocol health from
-# interface state, which only fires cleanly when BOTH ends transition
-# in the same poll cycle. A single-sided `shutdown` (only one end
-# goes down) fell through to a generic interface message instead of
-# the correct one. Real protocol state (BGP4-MIB/OSPF-MIB, see
-# PROTOCOL_CHECKS below) replaces that link-level semantic entirely -
-# these plain per-interface entries just keep a friendly message for
-# the raw physical/line-protocol event itself, which is still useful
-# signal on its own.
+# The backbone/uplink interfaces (Gi0/2 edges, Gi0/3 DSWs, Gi0/1/Gi0/0
+# edge-DSW uplinks) are deliberately NOT here - they're fully covered
+# by PROTOCOL_CHECKS below (real BGP/OSPF state) and suppressed from
+# ever reaching a plain interface alert at all (PROTOCOL_TRACKED_INTERFACES),
+# rather than firing a redundant/less-informative interface event
+# alongside the protocol one. Only WAN-facing Gi0/0, which has no
+# protocol check of its own, needs a friendly message here.
 DEVICE_INTERFACE_MAP = {
     ("EdgeR1", "GigabitEthernet0/0"): "EdgeR1 internet uplink is affected - verify ISP/WAN path.",
     ("EdgeR2", "GigabitEthernet0/0"): "EdgeR2 internet uplink is affected - verify ISP/WAN path.",
-    ("EdgeR1", "GigabitEthernet0/2"): "EdgeR1<->EdgeR2 backbone link (carries iBGP) - see the iBGP session alert for protocol impact.",
-    ("EdgeR2", "GigabitEthernet0/2"): "EdgeR1<->EdgeR2 backbone link (carries iBGP) - see the iBGP session alert for protocol impact.",
-    ("DSW1", "GigabitEthernet0/3"): "DSW1<->DSW2 backbone link (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
-    ("DSW2", "GigabitEthernet0/3"): "DSW1<->DSW2 backbone link (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
-    ("EdgeR1", "GigabitEthernet0/1"): "EdgeR1<->DSW1 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
-    ("DSW1", "GigabitEthernet0/0"): "EdgeR1<->DSW1 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
-    ("EdgeR2", "GigabitEthernet0/1"): "EdgeR2<->DSW2 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
-    ("DSW2", "GigabitEthernet0/0"): "EdgeR2<->DSW2 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
 }
 
 # Real protocol-state checks, replacing the old interface-inferred
@@ -116,56 +104,66 @@ BGP_STATE_ESTABLISHED = {"established", "6"}       # same MIB-text-vs-integer go
 OSPF_NBR_STATE_OID = "1.3.6.1.2.1.14.10.1.6"     # OSPF-MIB::ospfNbrState, indexed by <neighbor-ip>.0
 OSPF_STATE_FULL = {"full", "8"}
 
+# "interface" is the LOCAL interface each check's SNMP query is really
+# about - used to suppress the plain per-interface alert for these
+# specific (host, interface) pairs (see PROTOCOL_TRACKED_INTERFACES
+# below), so a link with its own protocol check doesn't also fire a
+# redundant/less-informative interface-level alert alongside it.
 PROTOCOL_CHECKS = [
     {
-        "kind": "bgp", "host": "EdgeR1", "target_ip": "10.20.1.5",
-        "link_id": "EdgeR1-EdgeR2-ibgp", "label": "iBGP session",
+        "kind": "bgp", "host": "EdgeR1", "target_ip": "10.20.1.5", "interface": "GigabitEthernet0/2",
+        "link_id": "EdgeR1-EdgeR2-ibgp", "label": "BGP neighbor",
         "detail": "EdgeR1 <-> EdgeR2 iBGP session down - check backbone link Gi0/2.",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/2",
     },
     {
-        "kind": "bgp", "host": "EdgeR2", "target_ip": "10.20.1.4",
-        "link_id": "EdgeR1-EdgeR2-ibgp", "label": "iBGP session",
+        "kind": "bgp", "host": "EdgeR2", "target_ip": "10.20.1.4", "interface": "GigabitEthernet0/2",
+        "link_id": "EdgeR1-EdgeR2-ibgp", "label": "BGP neighbor",
         "detail": "EdgeR1 <-> EdgeR2 iBGP session down - check backbone link Gi0/2.",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/2",
     },
     {
-        "kind": "ospf", "host": "DSW1", "target_ip": "10.20.1.7",
+        "kind": "ospf", "host": "DSW1", "target_ip": "10.20.1.7", "interface": "GigabitEthernet0/3",
         "link_id": "DSW1-DSW2-backbone", "label": "OSPF neighbor",
         "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
         "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
     },
     {
-        "kind": "ospf", "host": "DSW2", "target_ip": "10.20.1.6",
+        "kind": "ospf", "host": "DSW2", "target_ip": "10.20.1.6", "interface": "GigabitEthernet0/3",
         "link_id": "DSW1-DSW2-backbone", "label": "OSPF neighbor",
         "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
         "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
     },
     {
-        "kind": "ospf", "host": "EdgeR1", "target_ip": "10.20.1.1",
+        "kind": "ospf", "host": "EdgeR1", "target_ip": "10.20.1.1", "interface": "GigabitEthernet0/1",
         "link_id": "EdgeR1-DSW1-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR1 <-> DSW1 adjacency down - check uplink Gi0/1 (EdgeR1) / Gi0/0 (DSW1).",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/1",
     },
     {
-        "kind": "ospf", "host": "DSW1", "target_ip": "10.20.1.0",
+        "kind": "ospf", "host": "DSW1", "target_ip": "10.20.1.0", "interface": "GigabitEthernet0/0",
         "link_id": "EdgeR1-DSW1-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR1 <-> DSW1 adjacency down - check uplink Gi0/1 (EdgeR1) / Gi0/0 (DSW1).",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/1",
     },
     {
-        "kind": "ospf", "host": "EdgeR2", "target_ip": "10.20.1.3",
+        "kind": "ospf", "host": "EdgeR2", "target_ip": "10.20.1.3", "interface": "GigabitEthernet0/1",
         "link_id": "EdgeR2-DSW2-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
         "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
     },
     {
-        "kind": "ospf", "host": "DSW2", "target_ip": "10.20.1.2",
+        "kind": "ospf", "host": "DSW2", "target_ip": "10.20.1.2", "interface": "GigabitEthernet0/0",
         "link_id": "EdgeR2-DSW2-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
         "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
     },
 ]
+
+# (host, interface) pairs covered by a PROTOCOL_CHECKS entry - these
+# never get a plain interface-level alert (see main()), since the
+# protocol check is strictly more informative for exactly these links.
+PROTOCOL_TRACKED_INTERFACES = {(c["host"], c["interface"]) for c in PROTOCOL_CHECKS}
 
 
 def load_all_hosts(site: str) -> dict:
@@ -356,8 +354,14 @@ def main() -> None:
 
         # Plain interface events - no more link-pair consolidation here,
         # that semantic moved to PROTOCOL_CHECKS below. A single
-        # interface transition is always its own event now.
+        # interface transition is always its own event now, EXCEPT for
+        # interfaces with their own protocol check (PROTOCOL_TRACKED_INTERFACES) -
+        # those are suppressed here entirely so a tracked link doesn't
+        # fire both a generic interface alert AND the more informative
+        # protocol one for the same underlying event.
         for key, state in new_iface_state.items():
+            if key in PROTOCOL_TRACKED_INTERFACES:
+                continue
             old_state = iface_state.get(key)
             if old_state is None or state == old_state:
                 continue
