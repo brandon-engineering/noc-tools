@@ -74,86 +74,98 @@ OPER_STATUS_UP = {"up", "1"}
 
 # Duplicated from netalert.py's DEVICE_INTERFACE_MAP - see this file's
 # docstring for why it isn't a shared import.
+#
+# The backbone/uplink interfaces below used to be consolidated into
+# link-pair alerts (LINK_PAIR_MAP, removed 2026-09-18) labeled "OSPF
+# neighbor"/"iBGP session" - but that inferred protocol health from
+# interface state, which only fires cleanly when BOTH ends transition
+# in the same poll cycle. A single-sided `shutdown` (only one end
+# goes down) fell through to a generic interface message instead of
+# the correct one. Real protocol state (BGP4-MIB/OSPF-MIB, see
+# PROTOCOL_CHECKS below) replaces that link-level semantic entirely -
+# these plain per-interface entries just keep a friendly message for
+# the raw physical/line-protocol event itself, which is still useful
+# signal on its own.
 DEVICE_INTERFACE_MAP = {
     ("EdgeR1", "GigabitEthernet0/0"): "EdgeR1 internet uplink is affected - verify ISP/WAN path.",
     ("EdgeR2", "GigabitEthernet0/0"): "EdgeR2 internet uplink is affected - verify ISP/WAN path.",
+    ("EdgeR1", "GigabitEthernet0/2"): "EdgeR1<->EdgeR2 backbone link (carries iBGP) - see the iBGP session alert for protocol impact.",
+    ("EdgeR2", "GigabitEthernet0/2"): "EdgeR1<->EdgeR2 backbone link (carries iBGP) - see the iBGP session alert for protocol impact.",
+    ("DSW1", "GigabitEthernet0/3"): "DSW1<->DSW2 backbone link (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
+    ("DSW2", "GigabitEthernet0/3"): "DSW1<->DSW2 backbone link (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
+    ("EdgeR1", "GigabitEthernet0/1"): "EdgeR1<->DSW1 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
+    ("DSW1", "GigabitEthernet0/0"): "EdgeR1<->DSW1 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
+    ("EdgeR2", "GigabitEthernet0/1"): "EdgeR2<->DSW2 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
+    ("DSW2", "GigabitEthernet0/0"): "EdgeR2<->DSW2 uplink (carries OSPF) - see the OSPF neighbor alert for protocol impact.",
 }
 
-# Duplicated from netalert.py's LINK_PAIR_MAP - see this file's
-# docstring for why it isn't a shared import. Interface pairs that are
-# actually two ends of the SAME physical link - alerted as ONE
-# link-level event instead of two separate per-device interface
-# events, since a real link failure makes both ends transition
-# together in the same poll cycle (as opposed to a one-sided port
-# fault, which only shows up on one side). `label` names the protocol
-# relationship this link is actually monitored by - used as both the
-# message prefix and the Grafana title.
-LINK_PAIR_MAP = {
-    ("DSW1", "GigabitEthernet0/3"): {
-        "peer_host": "DSW2",
-        "peer_interface": "GigabitEthernet0/3",
-        "link_id": "DSW1-DSW2-backbone",
-        "label": "OSPF neighbor",
-        "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
-        "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
-    },
-    ("DSW2", "GigabitEthernet0/3"): {
-        "peer_host": "DSW1",
-        "peer_interface": "GigabitEthernet0/3",
-        "link_id": "DSW1-DSW2-backbone",
-        "label": "OSPF neighbor",
-        "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
-        "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
-    },
-    ("EdgeR1", "GigabitEthernet0/2"): {
-        "peer_host": "EdgeR2",
-        "peer_interface": "GigabitEthernet0/2",
-        "link_id": "EdgeR1-EdgeR2-backbone",
-        "label": "iBGP session",
+# Real protocol-state checks, replacing the old interface-inferred
+# LINK_PAIR_MAP for BGP/OSPF. Each entry polls ONE side's view of a
+# session/adjacency directly via SNMP (BGP4-MIB bgpPeerState /
+# OSPF-MIB ospfNbrState) rather than assuming a physical interface
+# being up means the protocol above it is healthy. Multiple entries
+# share a `link_id` (both sides of the same session/adjacency) -
+# either side alone transitioning is real signal on its own (unlike
+# the old interface-pair logic, this does NOT require both sides to
+# move together), consolidated to one alert per link_id per cycle so
+# a full link failure (both sides transition together) still only
+# alerts once.
+BGP_PEER_STATE_OID = "1.3.6.1.2.1.15.3.1.2"      # BGP4-MIB::bgpPeerState, indexed by peer IP
+BGP_STATE_ESTABLISHED = {"established", "6"}       # same MIB-text-vs-integer gotcha as ifOperStatus
+
+OSPF_NBR_STATE_OID = "1.3.6.1.2.1.14.10.1.6"     # OSPF-MIB::ospfNbrState, indexed by <neighbor-ip>.0
+OSPF_STATE_FULL = {"full", "8"}
+
+PROTOCOL_CHECKS = [
+    {
+        "kind": "bgp", "host": "EdgeR1", "target_ip": "10.20.1.5",
+        "link_id": "EdgeR1-EdgeR2-ibgp", "label": "iBGP session",
         "detail": "EdgeR1 <-> EdgeR2 iBGP session down - check backbone link Gi0/2.",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/2",
     },
-    ("EdgeR2", "GigabitEthernet0/2"): {
-        "peer_host": "EdgeR1",
-        "peer_interface": "GigabitEthernet0/2",
-        "link_id": "EdgeR1-EdgeR2-backbone",
-        "label": "iBGP session",
+    {
+        "kind": "bgp", "host": "EdgeR2", "target_ip": "10.20.1.4",
+        "link_id": "EdgeR1-EdgeR2-ibgp", "label": "iBGP session",
         "detail": "EdgeR1 <-> EdgeR2 iBGP session down - check backbone link Gi0/2.",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/2",
     },
-    ("EdgeR1", "GigabitEthernet0/1"): {
-        "peer_host": "DSW1",
-        "peer_interface": "GigabitEthernet0/0",
-        "link_id": "EdgeR1-DSW1-uplink",
-        "label": "OSPF neighbor",
+    {
+        "kind": "ospf", "host": "DSW1", "target_ip": "10.20.1.7",
+        "link_id": "DSW1-DSW2-backbone", "label": "OSPF neighbor",
+        "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
+        "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
+    },
+    {
+        "kind": "ospf", "host": "DSW2", "target_ip": "10.20.1.6",
+        "link_id": "DSW1-DSW2-backbone", "label": "OSPF neighbor",
+        "detail": "DSW1 <-> DSW2 adjacency down - check backbone link Gi0/3.",
+        "noc_check_command": "noccheck MemberA DSW1 GigabitEthernet0/3",
+    },
+    {
+        "kind": "ospf", "host": "EdgeR1", "target_ip": "10.20.1.1",
+        "link_id": "EdgeR1-DSW1-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR1 <-> DSW1 adjacency down - check uplink Gi0/1 (EdgeR1) / Gi0/0 (DSW1).",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/1",
     },
-    ("DSW1", "GigabitEthernet0/0"): {
-        "peer_host": "EdgeR1",
-        "peer_interface": "GigabitEthernet0/1",
-        "link_id": "EdgeR1-DSW1-uplink",
-        "label": "OSPF neighbor",
+    {
+        "kind": "ospf", "host": "DSW1", "target_ip": "10.20.1.0",
+        "link_id": "EdgeR1-DSW1-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR1 <-> DSW1 adjacency down - check uplink Gi0/1 (EdgeR1) / Gi0/0 (DSW1).",
         "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/1",
     },
-    ("EdgeR2", "GigabitEthernet0/1"): {
-        "peer_host": "DSW2",
-        "peer_interface": "GigabitEthernet0/0",
-        "link_id": "EdgeR2-DSW2-uplink",
-        "label": "OSPF neighbor",
+    {
+        "kind": "ospf", "host": "EdgeR2", "target_ip": "10.20.1.3",
+        "link_id": "EdgeR2-DSW2-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
         "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
     },
-    ("DSW2", "GigabitEthernet0/0"): {
-        "peer_host": "EdgeR2",
-        "peer_interface": "GigabitEthernet0/1",
-        "link_id": "EdgeR2-DSW2-uplink",
-        "label": "OSPF neighbor",
+    {
+        "kind": "ospf", "host": "DSW2", "target_ip": "10.20.1.2",
+        "link_id": "EdgeR2-DSW2-uplink", "label": "OSPF neighbor",
         "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
         "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
     },
-}
+]
 
 
 def load_all_hosts(site: str) -> dict:
@@ -239,6 +251,22 @@ def poll_interfaces(ip: str) -> dict:
     }
 
 
+def poll_protocol_state(kind: str, ip: str, target_ip: str) -> str:
+    """Return 'up' if the named BGP session ('bgp') or OSPF adjacency
+    ('ospf') is Established/Full, else 'down' - including when the
+    device itself doesn't respond (can't confirm healthy = treat as
+    down for alerting purposes)."""
+    if kind == "bgp":
+        value = snmp_get(ip, f"{BGP_PEER_STATE_OID}.{target_ip}")
+        healthy = BGP_STATE_ESTABLISHED
+    else:
+        value = snmp_get(ip, f"{OSPF_NBR_STATE_OID}.{target_ip}.0")
+        healthy = OSPF_STATE_FULL
+    if value is None:
+        return "down"
+    return "up" if value in healthy else "down"
+
+
 def build_interface_message(host: str, interface: str, state: str) -> str:
     friendly = DEVICE_INTERFACE_MAP.get((host, interface))
     icon = "🔴" if state == "down" else "🟢"
@@ -261,14 +289,14 @@ def build_interface_message(host: str, interface: str, state: str) -> str:
              f"Device: {host} | Interface: {interface} | State: UP")
 
 
-def build_link_message(pair: dict, state: str) -> str:
-    """Single consolidated message for a link defined in
-    LINK_PAIR_MAP, representing both physical ends as one logical
-    event instead of two per-device interface events."""
+def build_link_message(check: dict, state: str) -> str:
+    """Single consolidated message for a protocol-state check defined
+    in PROTOCOL_CHECKS, representing both sides of a session/adjacency
+    as one logical event instead of two."""
     icon = "🔴" if state == "down" else "🟢"
     if state == "down":
-        return f"{icon} {pair['label']} down: {pair['detail']}"
-    return f"{icon} {pair['label']} RECOVERED: {pair['detail']} (previously flagged as down)."
+        return f"{icon} {check['label']} down: {check['detail']}"
+    return f"{icon} {check['label']} RECOVERED: {check['detail']} (previously flagged as down)."
 
 
 def send_alert(message: str, alert_key: str, noc_check_command: str = None, title: str = None) -> None:
@@ -298,9 +326,11 @@ def main() -> None:
 
     device_up = {host: None for host in hosts}     # device-level reachability
     iface_state = {}                                # {(host, interface): "up"|"down"}
+    protocol_state = {}                             # {(host, link_id): "up"|"down"}
 
     while True:
         new_iface_state = {}
+        new_protocol_state = {}
         for host, ip in hosts.items():
             reachable = snmp_get(ip, SYSUPTIME_OID) is not None
 
@@ -318,42 +348,50 @@ def main() -> None:
             for interface, state in poll_interfaces(ip).items():
                 new_iface_state[(host, interface)] = state
 
-        # Evaluate transitions only after every host's been polled this
-        # cycle, so a link-pair's two sides (which transition together
-        # on a real link failure) can be folded into one alert instead
-        # of two - see LINK_PAIR_MAP.
-        alerted_links = set()
+            for check in PROTOCOL_CHECKS:
+                if check["host"] == host:
+                    new_protocol_state[(host, check["link_id"])] = poll_protocol_state(
+                        check["kind"], ip, check["target_ip"]
+                    )
+
+        # Plain interface events - no more link-pair consolidation here,
+        # that semantic moved to PROTOCOL_CHECKS below. A single
+        # interface transition is always its own event now.
         for key, state in new_iface_state.items():
             old_state = iface_state.get(key)
             if old_state is None or state == old_state:
                 continue
-
             host, interface = key
-            pair = LINK_PAIR_MAP.get(key)
-            if pair:
-                if pair["link_id"] in alerted_links:
-                    continue  # peer side already alerted this cycle for the same link
-                peer_state = new_iface_state.get((pair["peer_host"], pair["peer_interface"]))
-                if peer_state == state:
-                    send_alert(
-                        build_link_message(pair, state),
-                        f"link-{pair['link_id']}",
-                        noc_check_command=pair["noc_check_command"],
-                        title=f"{pair['label']} DOWN" if state == "down" else f"{pair['label']} RECOVERED",
-                    )
-                    alerted_links.add(pair["link_id"])
-                    continue
-                # Peer side didn't move the same way this cycle - not a
-                # clean link-level event (yet); fall through and alert
-                # on this side alone so a one-sided fault still surfaces.
-
             send_alert(
                 build_interface_message(host, interface, state),
                 f"{host}-{interface}",
                 noc_check_command=f"noccheck {site} {host} {interface}",
             )
 
+        # Protocol-state events - either side alone transitioning is
+        # real signal (unlike the old interface-pair logic, this does
+        # NOT wait for both sides to agree), consolidated to one alert
+        # per link_id per cycle in case both sides move together (a
+        # full link failure).
+        alerted_protocol_links = set()
+        for key, state in new_protocol_state.items():
+            old_state = protocol_state.get(key)
+            if old_state is None or state == old_state:
+                continue
+            host, link_id = key
+            if link_id in alerted_protocol_links:
+                continue
+            check = next(c for c in PROTOCOL_CHECKS if c["host"] == host and c["link_id"] == link_id)
+            send_alert(
+                build_link_message(check, state),
+                f"link-{link_id}",
+                noc_check_command=check["noc_check_command"],
+                title=f"{check['label']} DOWN" if state == "down" else f"{check['label']} RECOVERED",
+            )
+            alerted_protocol_links.add(link_id)
+
         iface_state.update(new_iface_state)
+        protocol_state.update(new_protocol_state)
         time.sleep(POLL_INTERVAL)
 
 

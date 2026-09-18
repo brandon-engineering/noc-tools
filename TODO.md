@@ -2,30 +2,29 @@
 
 ## noc_check.py — features
 
-- [ ] **Auto-check the far end of a backbone link.** When a link in
-      `OSPF_NEIGHBOR_CHECK_ON_DOWN` (DSW1/DSW2 Gi0/3) or
-      `BGP_NEIGHBOR_CHECK_ON_DOWN` (EdgeR1/EdgeR2 Gi0/2) comes back
-      down/down, also connect to the `peer` device and check its
-      corresponding interface state directly - same idea as
-      `NEIGHBOR_PING_CHECK` for WAN links, but checking the actual
-      other end of the same physical link instead of a third device.
-      Lets a single check (e.g. `noc_check.py MemberA DSW1
-      GigabitEthernet0/3`) tell a tech whether this is a local port
-      failure or the whole link is down on both sides, without a
-      second manual check. Requested 2026-09-15.
+- [x] **Auto-check the far end of a backbone link — DONE 2026-09-18.**
+      Any interface defined in `OSPF_NEIGHBOR_CHECK_ON_DOWN` or
+      `BGP_NEIGHBOR_CHECK_ON_DOWN` now prints a "Both sides of this
+      link" section regardless of state, reverse-looking-up the peer's
+      own interface name (`find_peer_interface`) and connecting to it
+      with the same already-entered credentials
+      (`check_peer_interface_status`) to show its Status/Protocol
+      alongside this device's. Requested 2026-09-15.
 
-- [ ] **OSPF/BGP adjacency checks for the remaining internal links.**
-      EdgeR1/EdgeR2's backbone link to DSW1/DSW2 (Gi0/1) and their eBGP
-      links to R1/R2 (Gi0/3), plus DSW1/DSW2's uplinks to the edge
-      routers (Gi0/0), still have no interface-specific logic. DSW1/
-      DSW2's Gi0/3 (OSPF, `OSPF_NEIGHBOR_CHECK_ON_DOWN`) and EdgeR1/
-      EdgeR2's Gi0/2 (iBGP, `BGP_NEIGHBOR_CHECK_ON_DOWN`, plus the
-      matching `LINK_PAIR_MAP` entry in netalert.py/snmp_poll.py for
-      one consolidated alert) are both done as of 2026-09-15. Extend
-      the same pattern to the rest once BGP/OSPF monitoring is wanted
-      more broadly; not needed yet since NOC alerting today is
-      escalate-to-engineer once a link is correctly labeled, not deep
-      protocol diagnosis. Requested 2026-09-14.
+- [x] **OSPF/BGP adjacency checks for the remaining internal links —
+      DONE 2026-09-18.** `snmp_poll.py`'s old `LINK_PAIR_MAP`
+      (interface-state-inferred protocol health) replaced entirely by
+      `PROTOCOL_CHECKS` - direct SNMP polling of real BGP4-MIB
+      `bgpPeerState` / OSPF-MIB `ospfNbrState`, covering the
+      EdgeR1-EdgeR2 iBGP session and all three OSPF adjacencies
+      (DSW1-DSW2 backbone, EdgeR1-DSW1 uplink, EdgeR2-DSW2 uplink).
+      Found and fixed a real gap along the way: the old interface-pair
+      logic only alerted cleanly when both ends transitioned in the
+      same poll cycle, so a single-sided `shutdown` fell through to a
+      generic interface message instead of "iBGP session down"/"OSPF
+      neighbor down". Real protocol-state polling fixes this
+      structurally - either side alone reporting non-Established/non-
+      Full is real signal, no longer requires both sides to agree.
 
 - [ ] **Speed and duplex in the plain-text output.** Parse speed
       (e.g. `1000Mb/s`, `10Gb/s`, `Auto`) and duplex (`Full`, `Half`,

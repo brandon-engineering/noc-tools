@@ -399,6 +399,45 @@ def run_neighbor_ping_check(site: str, neighbor_hostname: str, source_interface:
     return f"{neighbor_hostname} (sourced from its {source_interface}) pinging WAN interface {target_ip} via dedicated static route: {summary}"
 
 
+def find_peer_interface(check_map: dict, site: str, hostname: str, peer_hostname: str) -> str:
+    """Reverse-lookup the peer's own interface name for a link defined
+    in OSPF_NEIGHBOR_CHECK_ON_DOWN/BGP_NEIGHBOR_CHECK_ON_DOWN - both
+    maps define both directions of a link, so the peer's entry (keyed
+    by its own hostname/interface) points back at this device by name.
+    Returns None if no matching reverse entry exists."""
+    for (chk_site, chk_host, chk_iface), info in check_map.items():
+        if chk_site == site and chk_host == peer_hostname and info.get("peer") == hostname:
+            return chk_iface
+    return None
+
+
+def check_peer_interface_status(site: str, peer_hostname: str, peer_interface: str,
+                                 username: str, password: str) -> str:
+    """Connect to the peer device and report its own status/line
+    protocol for the interface on its side of the same physical link -
+    TODO.md's "auto-check the far end of a backbone link", so a single
+    check tells a tech whether this is a local port failure or the
+    whole link is down on both sides, without a second manual check."""
+    peer_ip = load_inventory_host(site, peer_hostname)
+    if not peer_ip:
+        return f"Could not find peer '{peer_hostname}' in inventory/{site}.yml - skipping far-end check."
+
+    try:
+        peer_conn = connect(peer_ip, username, password)
+    except NetmikoAuthenticationException:
+        return f"Authentication failed connecting to peer {peer_hostname} - skipping far-end check."
+    except NetmikoTimeoutException:
+        return f"Could not reach peer {peer_hostname} ({peer_ip}) - peer itself may be down too."
+    except Exception as exc:
+        return f"Unexpected error connecting to peer {peer_hostname}: {exc}"
+
+    raw_output = run_command(peer_conn, f"show interface {peer_interface}")
+    peer_conn.disconnect()
+
+    peer_state = parse_state(raw_output)
+    return f"{peer_hostname} {peer_interface}: Status = {peer_state['status']}, Protocol = {peer_state['protocol']}"
+
+
 def parse_recent_history(raw_log_output: str, interface: str) -> list:
     """Filter the device's own log buffer down to up/down events for
     the specific interface being checked, most recent first, cleanly
@@ -671,6 +710,28 @@ def main():
                 print(vrrp_output)
             except Exception as exc:
                 print(f"   Could not check redundancy status: {exc}")
+
+        # Both-sides-of-the-link status, for any known link (OSPF or
+        # BGP-carrying) regardless of state - TODO.md's "auto-check the
+        # far end of a backbone link". Shows Status/Protocol for both
+        # this device and its peer in one place, so a tech can tell a
+        # local port failure from a whole-link failure without a
+        # second manual check.
+        link_peer_hostname = None
+        for check_map in (OSPF_NEIGHBOR_CHECK_ON_DOWN, BGP_NEIGHBOR_CHECK_ON_DOWN):
+            entry = check_map.get((site, hostname, interface))
+            if entry:
+                link_peer_hostname = entry["peer"]
+                break
+        if link_peer_hostname:
+            peer_interface = (
+                find_peer_interface(OSPF_NEIGHBOR_CHECK_ON_DOWN, site, hostname, link_peer_hostname)
+                or find_peer_interface(BGP_NEIGHBOR_CHECK_ON_DOWN, site, hostname, link_peer_hostname)
+            )
+            if peer_interface:
+                print("\n--- Both sides of this link ---")
+                print(f"{hostname} {interface}: Status = {state['status']}, Protocol = {state['protocol']}")
+                print(check_peer_interface_status(site, link_peer_hostname, peer_interface, username, password))
 
         # OSPF adjacency check, only when this specific interface is a
         # known OSPF backbone link between two devices and is down
