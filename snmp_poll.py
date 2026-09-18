@@ -60,11 +60,17 @@ SNMP_TIMEOUT = 2
 SYSUPTIME_OID = "1.3.6.1.2.1.1.3.0"
 IF_DESCR_OID = "1.3.6.1.2.1.2.2.1.2"
 IF_OPER_STATUS_OID = "1.3.6.1.2.1.2.2.1.8"
-# ifOperStatus comes back as net-snmp's MIB-translated enum label, not
-# the raw integer, under -Oqn (confirmed against a live device: "up"/
-# "down", not "1"/"2"). "up" = up; everything else (down, unknown,
-# dormant, notPresent, lowerLayerDown, ...) is "not up" for alerting.
-OPER_STATUS_UP = "up"
+# ifOperStatus's returned format depends on the QUERYING client's own
+# net-snmp MIB configuration, not the remote device - originally
+# written assuming the MIB-translated text label ("up"/"down"), which
+# is what a host with MIB parsing enabled returns. Found 2026-09-18:
+# a fresh host with MIB parsing disabled by default (Ubuntu ships it
+# off - the same root cause as the snmp-mibs-downloader gotcha found
+# earlier the same night) returns the raw integer ("1" for up)
+# instead, and "1" == "up" is always false - every interface silently
+# reported "down" regardless of real state. Accept both so this works
+# regardless of the polling host's MIB config.
+OPER_STATUS_UP = {"up", "1"}
 
 # Duplicated from netalert.py's DEVICE_INTERFACE_MAP - see this file's
 # docstring for why it isn't a shared import.
@@ -227,7 +233,7 @@ def poll_interfaces(ip: str) -> dict:
     names = snmp_walk_table(ip, IF_DESCR_OID)
     statuses = snmp_walk_table(ip, IF_OPER_STATUS_OID)
     return {
-        names[idx]: ("up" if statuses.get(idx) == OPER_STATUS_UP else "down")
+        names[idx]: ("up" if statuses.get(idx) in OPER_STATUS_UP else "down")
         for idx in names
         if idx in statuses
     }
