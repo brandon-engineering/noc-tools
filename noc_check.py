@@ -110,6 +110,15 @@ OSPF_NEIGHBOR_CHECK_ON_DOWN = {
 BGP_NEIGHBOR_CHECK_ON_DOWN = {
     ("MemberA", "EdgeR1", "GigabitEthernet0/2"): {"peer": "EdgeR2", "peer_ip": "10.20.1.5"},
     ("MemberA", "EdgeR2", "GigabitEthernet0/2"): {"peer": "EdgeR1", "peer_ip": "10.20.1.4"},
+    # eBGP to the simulated ISPs (Phase 5). "kind"/"link" only change the
+    # wording ("iBGP"/"backbone link" is the default above). R1/R2 aren't
+    # in MemberA.yml, so there's no far-end interface check for these.
+    ("MemberA", "EdgeR1", "GigabitEthernet0/3"): {
+        "peer": "R1", "peer_ip": "203.0.113.2", "kind": "eBGP", "link": "upstream link",
+    },
+    ("MemberA", "EdgeR2", "GigabitEthernet0/3"): {
+        "peer": "R2", "peer_ip": "203.0.113.6", "kind": "eBGP", "link": "upstream link",
+    },
 }
 
 # Maps a specific WAN-facing interface (site, hostname, interface) to
@@ -309,11 +318,19 @@ def format_timedelta(delta) -> str:
     return " ".join(parts)
 
 
-def parse_transceiver_summary(raw_transceiver_output: str) -> str:
+def parse_transceiver_summary(raw_transceiver_output: str, raw_interface_output: str = "") -> str:
     """Pull optical Tx/Rx power readings out of 'show interfaces
     transceiver detail' (or platform equivalent) output, if present.
     Returns a short summary, or a note if this device/interface
-    doesn't support/report transceiver data (e.g. copper links)."""
+    doesn't support/report transceiver data (e.g. copper links).
+
+    Copper is detected from 'show interface' ("media type is RJ45"),
+    not from the transceiver command's own wording - devices phrase
+    "no transceiver" differently (or return unrelated text), so that
+    output alone can't be trusted to identify a copper port."""
+    if re.search(r"media type is RJ45", raw_interface_output, re.IGNORECASE):
+        return "Copper (RJ45) link - no optical transceiver, so no light levels to report."
+
     if not raw_transceiver_output.strip():
         return "No transceiver data returned (command may be unsupported on this platform)."
 
@@ -518,7 +535,8 @@ def describe_ospf_neighbor_status(raw_ospf_output: str, peer_router_id: str, pee
     )
 
 
-def describe_bgp_neighbor_status(raw_bgp_output: str, peer_ip: str, peer_hostname: str) -> str:
+def describe_bgp_neighbor_status(raw_bgp_output: str, peer_ip: str, peer_hostname: str,
+                                  kind: str = "iBGP") -> str:
     """Translate 'show ip bgp summary' output into a plain-language
     statement of whether a specific BGP neighbor is Established.
     Unlike OSPF, a down BGP session still shows a row for the
@@ -536,7 +554,7 @@ def describe_bgp_neighbor_status(raw_bgp_output: str, peer_ip: str, peer_hostnam
     if last_field.isdigit():
         return (
             f"   {peer_hostname} ({peer_ip}) BGP session is Established "
-            f"({last_field} prefix(es) received) - the iBGP session is up."
+            f"({last_field} prefix(es) received) - the {kind} session is up."
         )
     return (
         f"   {peer_hostname} ({peer_ip}) BGP session is down - state: "
@@ -580,10 +598,12 @@ def suggest_next_step(state: dict, site: str, hostname: str, interface: str) -> 
             )
         bgp_link = BGP_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
         if bgp_link:
+            kind = bgp_link.get("kind", "iBGP")
+            link = bgp_link.get("link", "backbone link")
             return (
-                f"🔴 iBGP session to {bgp_link['peer']} is down (down/down).\n"
+                f"🔴 {kind} session to {bgp_link['peer']} is down (down/down).\n"
                 f"   {hostname} and {bgp_link['peer']} are no longer BGP peers\n"
-                f"   over this backbone link - see live BGP session status below.\n"
+                f"   over this {link} - see live BGP session status below.\n"
                 f"   Escalate to a Network Engineer."
             )
         return (
@@ -695,7 +715,7 @@ def main():
         # Transceiver / optical light levels
         print("\n--- Transceiver status ---")
         raw_transceiver_output = run_command(conn, f"show interfaces {interface} transceiver detail")
-        print(f"   {parse_transceiver_summary(raw_transceiver_output)}")
+        print(f"   {parse_transceiver_summary(raw_transceiver_output, raw_interface_output)}")
 
         # VRRP / redundancy check, only when this specific interface is
         # known to matter for a redundancy relationship and is down
@@ -753,7 +773,8 @@ def main():
             print(f"\n--- BGP session status ({bgp_check['peer']} via {interface}) ---")
             try:
                 bgp_output = run_command(conn, "show ip bgp summary")
-                print(describe_bgp_neighbor_status(bgp_output, bgp_check["peer_ip"], bgp_check["peer"]))
+                print(describe_bgp_neighbor_status(bgp_output, bgp_check["peer_ip"], bgp_check["peer"],
+                                                   bgp_check.get("kind", "iBGP")))
                 print("\n--- Raw BGP summary output ---")
                 print(bgp_output)
             except Exception as exc:

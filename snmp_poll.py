@@ -158,6 +158,22 @@ PROTOCOL_CHECKS = [
         "detail": "EdgeR2 <-> DSW2 adjacency down - check uplink Gi0/1 (EdgeR2) / Gi0/0 (DSW2).",
         "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/1",
     },
+    # eBGP to the simulated ISPs. Only the edge side is polled - R1/R2
+    # are external to the lab (not in MemberA.yml), so there is one
+    # check per link rather than one per side. Gi0/3 being listed here
+    # also suppresses its plain interface alert (PROTOCOL_TRACKED_INTERFACES).
+    {
+        "kind": "bgp", "host": "EdgeR1", "target_ip": "203.0.113.2", "interface": "GigabitEthernet0/3",
+        "link_id": "EdgeR1-R1-ebgp", "label": "eBGP neighbor",
+        "detail": "EdgeR1 <-> R1 (ISP-A) eBGP session down - check upstream link Gi0/3.",
+        "noc_check_command": "noccheck MemberA EdgeR1 GigabitEthernet0/3",
+    },
+    {
+        "kind": "bgp", "host": "EdgeR2", "target_ip": "203.0.113.6", "interface": "GigabitEthernet0/3",
+        "link_id": "EdgeR2-R2-ebgp", "label": "eBGP neighbor",
+        "detail": "EdgeR2 <-> R2 (ISP-B) eBGP session down - check upstream link Gi0/3.",
+        "noc_check_command": "noccheck MemberA EdgeR2 GigabitEthernet0/3",
+    },
 ]
 
 # (host, interface) pairs covered by a PROTOCOL_CHECKS entry - these
