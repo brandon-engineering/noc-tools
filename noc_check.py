@@ -453,30 +453,35 @@ def find_peer_interface(check_map: dict, site: str, hostname: str, peer_hostname
 
 
 def check_peer_interface_status(site: str, peer_hostname: str, peer_interface: str,
-                                 username: str, password: str) -> str:
+                                 username: str, password: str):
     """Connect to the peer device and report its own status/line
     protocol for the interface on its side of the same physical link -
     TODO.md's "auto-check the far end of a backbone link", so a single
     check tells a tech whether this is a local port failure or the
-    whole link is down on both sides, without a second manual check."""
+    whole link is down on both sides, without a second manual check.
+
+    Returns (text, state): state is the parsed status/protocol dict, or
+    None if the peer couldn't be checked - so a caller can tell "far end
+    is down" apart from "couldn't look"."""
     peer_ip = load_inventory_host(site, peer_hostname)
     if not peer_ip:
-        return f"Could not find peer '{peer_hostname}' in inventory/{site}.yml - skipping far-end check."
+        return f"Could not find peer '{peer_hostname}' in inventory/{site}.yml - skipping far-end check.", None
 
     try:
         peer_conn = connect(peer_ip, username, password)
     except NetmikoAuthenticationException:
-        return f"Authentication failed connecting to peer {peer_hostname} - skipping far-end check."
+        return f"Authentication failed connecting to peer {peer_hostname} - skipping far-end check.", None
     except NetmikoTimeoutException:
-        return f"Could not reach peer {peer_hostname} ({peer_ip}) - peer itself may be down too."
+        return f"Could not reach peer {peer_hostname} ({peer_ip}) - peer itself may be down too.", None
     except Exception as exc:
-        return f"Unexpected error connecting to peer {peer_hostname}: {exc}"
+        return f"Unexpected error connecting to peer {peer_hostname}: {exc}", None
 
     raw_output = run_command(peer_conn, f"show interface {peer_interface}")
     peer_conn.disconnect()
 
     peer_state = parse_state(raw_output)
-    return f"{peer_hostname} {peer_interface}: Status = {peer_state['status']}, Protocol = {peer_state['protocol']}"
+    text = f"{peer_hostname} {peer_interface}: Status = {peer_state['status']}, Protocol = {peer_state['protocol']}"
+    return text, peer_state
 
 
 def parse_recent_history(raw_log_output: str, interface: str) -> list:
@@ -538,7 +543,21 @@ def describe_vrrp_status(raw_vrrp_output: str, hostname: str) -> str:
     )
 
 
-def describe_ospf_neighbor_status(raw_ospf_output: str, peer_router_id: str, peer_hostname: str) -> str:
+def ospf_neighbor_is_up(raw_ospf_output: str, peer_router_id: str) -> bool:
+    """True if the peer appears in 'show ip ospf neighbor' at all -
+    IOS only lists neighbors it currently has an adjacency with."""
+    return bool(re.search(rf"{re.escape(peer_router_id)}\s+\d+\s+(\S+)", raw_ospf_output))
+
+
+def bgp_neighbor_is_up(raw_bgp_output: str, peer_ip: str) -> bool:
+    """True only if the peer's row in 'show ip bgp summary' ends in a
+    prefix count (Established) - a state name means the session is down."""
+    match = re.search(rf"^{re.escape(peer_ip)}\s+.*?(\S+)\s*$", raw_bgp_output, re.MULTILINE)
+    return bool(match) and match.group(1).isdigit()
+
+
+def describe_ospf_neighbor_status(raw_ospf_output: str, peer_router_id: str, peer_hostname: str,
+                                   interface_is_down: bool = True) -> str:
     """Translate 'show ip ospf neighbor' output into a plain-language
     statement of whether a specific peer is still an OSPF neighbor.
     IOS only lists neighbors it currently has an adjacency with, so a
@@ -546,11 +565,21 @@ def describe_ospf_neighbor_status(raw_ospf_output: str, peer_router_id: str, pee
     there's no explicit 'down' state to look for, only absence."""
     match = re.search(rf"{re.escape(peer_router_id)}\s+\d+\s+(\S+)", raw_ospf_output)
     if match:
+        adj_state = match.group(1).rstrip("/")
+        if not interface_is_down:
+            return f"   {peer_hostname} ({peer_router_id}) is an OSPF neighbor, state {adj_state} - adjacency is up."
         return (
             f"   {peer_hostname} ({peer_router_id}) is still an OSPF neighbor, "
-            f"state {match.group(1)} - adjacency is up, likely via an alternate "
+            f"state {adj_state} - adjacency is up, likely via an alternate "
             f"path. Confirm which interface it's reached over in the raw output "
             f"below."
+        )
+    if not interface_is_down:
+        return (
+            f"   {peer_hostname} ({peer_router_id}) does not appear in the OSPF "
+            f"neighbor table at all - the adjacency is DOWN even though this "
+            f"interface is up/up. The fault is beyond this port: check the far "
+            f"end and its OSPF configuration."
         )
     return (
         f"   {peer_hostname} ({peer_router_id}) does not appear in the OSPF "
@@ -560,7 +589,7 @@ def describe_ospf_neighbor_status(raw_ospf_output: str, peer_router_id: str, pee
 
 
 def describe_bgp_neighbor_status(raw_bgp_output: str, peer_ip: str, peer_hostname: str,
-                                  kind: str = "iBGP") -> str:
+                                  kind: str = "iBGP", interface_is_down: bool = True) -> str:
     """Translate 'show ip bgp summary' output into a plain-language
     statement of whether a specific BGP neighbor is Established.
     Unlike OSPF, a down BGP session still shows a row for the
@@ -580,19 +609,40 @@ def describe_bgp_neighbor_status(raw_bgp_output: str, peer_ip: str, peer_hostnam
             f"   {peer_hostname} ({peer_ip}) BGP session is Established "
             f"({last_field} prefix(es) received) - the {kind} session is up."
         )
+    if not interface_is_down:
+        return (
+            f"   {peer_hostname} ({peer_ip}) BGP session is down - state: "
+            f"{last_field}, even though this interface is up/up. The fault is "
+            f"beyond this port: check the far end and its BGP configuration."
+        )
     return (
         f"   {peer_hostname} ({peer_ip}) BGP session is down - state: "
         f"{last_field}, consistent with the interface state above."
     )
 
 
-def suggest_next_step(state: dict, site: str, hostname: str, interface: str) -> str:
+def suggest_next_step(state: dict, site: str, hostname: str, interface: str,
+                      problems: list = None) -> str:
     """Return a plain-language suggested next step based on live
-    interface state."""
+    interface state. `problems` lists faults found on the far end or in
+    the routing protocol riding this link - an interface can be up/up
+    locally while the link is effectively dead, and reporting "healthy"
+    then is worse than no answer, so any problem overrides it."""
     status = state["status"]
     protocol = state["protocol"]
 
     if status == "up" and protocol == "up":
+        if problems:
+            bullets = "\n".join(f"   - {p}" for p in problems)
+            return (
+                f"🟡 This interface is up/up, but the link is NOT healthy:\n"
+                f"{bullets}\n"
+                f"   The port itself looks fine, so this is not a cabling issue at\n"
+                f"   this end - see the far-end and protocol sections below.\n"
+                f"   Check whether planned maintenance is in progress on this link\n"
+                f"   (a far end shut on purpose looks exactly like this); if not,\n"
+                f"   escalate to a Network Engineer."
+            )
         return "✅ Interface is healthy (up/up). No action needed."
 
     if status == "administratively down":
@@ -726,8 +776,58 @@ def main():
         else:
             print("   No recent up/down events found in this device's local log buffer.")
 
+        is_down = state["status"] in ("down", "administratively down") or state["protocol"] == "down"
+
+        # Gather everything that can contradict a healthy-looking
+        # interface BEFORE printing the verdict: the far end of the link
+        # and the routing protocol riding it. An interface can be up/up
+        # locally while the link is dead (found live 2026-09-24: DSW2's
+        # port shut, DSW1's side stayed up/up, OSPF adjacency gone - the
+        # tool said "healthy, no action needed").
+        problems = []
+
+        link_peer_hostname = None
+        for check_map in (OSPF_NEIGHBOR_CHECK_ON_DOWN, BGP_NEIGHBOR_CHECK_ON_DOWN):
+            entry = check_map.get((site, hostname, interface))
+            if entry:
+                link_peer_hostname = entry["peer"]
+                break
+        far_end_text = None
+        if link_peer_hostname:
+            peer_interface = (
+                find_peer_interface(OSPF_NEIGHBOR_CHECK_ON_DOWN, site, hostname, link_peer_hostname)
+                or find_peer_interface(BGP_NEIGHBOR_CHECK_ON_DOWN, site, hostname, link_peer_hostname)
+            )
+            if peer_interface:
+                far_end_text, far_end_state = check_peer_interface_status(
+                    site, link_peer_hostname, peer_interface, username, password)
+                if (far_end_state and far_end_state["status"] != "unknown"
+                        and not (far_end_state["status"] == "up" and far_end_state["protocol"] == "up")):
+                    problems.append(
+                        f"the far end ({link_peer_hostname} {peer_interface}) is "
+                        f"{far_end_state['status']}/{far_end_state['protocol']}")
+
+        # An empty result means the command failed, not that the peer is
+        # gone - only report a problem on real output.
+        ospf_check = OSPF_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
+        ospf_output = run_command(conn, "show ip ospf neighbor") if ospf_check else ""
+        ospf_ok = True
+        if ospf_check and ospf_output.strip():
+            ospf_ok = ospf_neighbor_is_up(ospf_output, ospf_check["peer_router_id"])
+            if not ospf_ok:
+                problems.append(f"the OSPF adjacency to {ospf_check['peer']} is down")
+
+        bgp_check = BGP_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
+        bgp_output = run_command(conn, "show ip bgp summary") if bgp_check else ""
+        bgp_ok = True
+        if bgp_check and bgp_output.strip():
+            bgp_ok = bgp_neighbor_is_up(bgp_output, bgp_check["peer_ip"])
+            if not bgp_ok:
+                problems.append(
+                    f"the {bgp_check.get('kind', 'iBGP')} session to {bgp_check['peer']} is down")
+
         print()
-        print(suggest_next_step(state, site, hostname, interface))
+        print(suggest_next_step(state, site, hostname, interface, problems))
 
         # Real elapsed time in current state, calculated from the most
         # recent matching event above - not just raw IOS text, and shown
@@ -744,7 +844,6 @@ def main():
 
         # VRRP / redundancy check, only when this specific interface is
         # known to matter for a redundancy relationship and is down
-        is_down = state["status"] in ("down", "administratively down") or state["protocol"] == "down"
         context_note = VRRP_CHECK_ON_DOWN.get((site, hostname, interface))
         if is_down and context_note:
             print(f"\n--- Redundancy status ({context_note}) ---")
@@ -756,54 +855,33 @@ def main():
             except Exception as exc:
                 print(f"   Could not check redundancy status: {exc}")
 
-        # Both-sides-of-the-link status, for any known link (OSPF or
-        # BGP-carrying) regardless of state - TODO.md's "auto-check the
-        # far end of a backbone link". Shows Status/Protocol for both
-        # this device and its peer in one place, so a tech can tell a
-        # local port failure from a whole-link failure without a
-        # second manual check.
-        link_peer_hostname = None
-        for check_map in (OSPF_NEIGHBOR_CHECK_ON_DOWN, BGP_NEIGHBOR_CHECK_ON_DOWN):
-            entry = check_map.get((site, hostname, interface))
-            if entry:
-                link_peer_hostname = entry["peer"]
-                break
-        if link_peer_hostname:
-            peer_interface = (
-                find_peer_interface(OSPF_NEIGHBOR_CHECK_ON_DOWN, site, hostname, link_peer_hostname)
-                or find_peer_interface(BGP_NEIGHBOR_CHECK_ON_DOWN, site, hostname, link_peer_hostname)
-            )
-            if peer_interface:
-                print("\n--- Both sides of this link ---")
-                print(f"{hostname} {interface}: Status = {state['status']}, Protocol = {state['protocol']}")
-                print(check_peer_interface_status(site, link_peer_hostname, peer_interface, username, password))
+        # Both-sides-of-the-link status (gathered above), shown for any
+        # known link regardless of state - a tech can tell a local port
+        # failure from a whole-link failure without a second manual check.
+        if far_end_text:
+            print("\n--- Both sides of this link ---")
+            print(f"{hostname} {interface}: Status = {state['status']}, Protocol = {state['protocol']}")
+            print(far_end_text)
 
-        # OSPF adjacency check, only when this specific interface is a
-        # known OSPF backbone link between two devices and is down
-        ospf_check = OSPF_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
-        if is_down and ospf_check:
+        # OSPF adjacency / BGP session state - shown on every run for a
+        # tracked link, not just when the interface is down, since the
+        # protocol can be dead while the interface is up. Raw output is
+        # only printed when something is actually wrong.
+        if ospf_check and ospf_output.strip():
             print(f"\n--- OSPF adjacency status ({ospf_check['peer']} via {interface}) ---")
-            try:
-                ospf_output = run_command(conn, "show ip ospf neighbor")
-                print(describe_ospf_neighbor_status(ospf_output, ospf_check["peer_router_id"], ospf_check["peer"]))
+            print(describe_ospf_neighbor_status(ospf_output, ospf_check["peer_router_id"],
+                                                ospf_check["peer"], is_down))
+            if is_down or not ospf_ok:
                 print("\n--- Raw OSPF neighbor output ---")
                 print(ospf_output)
-            except Exception as exc:
-                print(f"   Could not check OSPF adjacency status: {exc}")
 
-        # BGP session check, only when this specific interface is a
-        # known iBGP-bearing backbone link between two devices and is down
-        bgp_check = BGP_NEIGHBOR_CHECK_ON_DOWN.get((site, hostname, interface))
-        if is_down and bgp_check:
+        if bgp_check and bgp_output.strip():
             print(f"\n--- BGP session status ({bgp_check['peer']} via {interface}) ---")
-            try:
-                bgp_output = run_command(conn, "show ip bgp summary")
-                print(describe_bgp_neighbor_status(bgp_output, bgp_check["peer_ip"], bgp_check["peer"],
-                                                   bgp_check.get("kind", "iBGP")))
+            print(describe_bgp_neighbor_status(bgp_output, bgp_check["peer_ip"], bgp_check["peer"],
+                                               bgp_check.get("kind", "iBGP"), is_down))
+            if is_down or not bgp_ok:
                 print("\n--- Raw BGP summary output ---")
                 print(bgp_output)
-            except Exception as exc:
-                print(f"   Could not check BGP session status: {exc}")
 
         # Neighbor ping check - only when this specific interface is down
         # and a neighbor/target is configured for it. Tests real WAN
