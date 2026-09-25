@@ -254,7 +254,28 @@ def parse_state(raw_output: str) -> dict:
     }
 
 
-def calculate_duration_in_state(recent_events: list, current_state: str) -> str:
+def parse_device_clock(raw_clock_output: str):
+    """Parse 'show clock' (e.g. '*08:19:39.123 EDT Thu Sep 24 2026')
+    into a naive datetime in the DEVICE's own local time, or None if it
+    can't be parsed. Log timestamps are in that same local time, so
+    durations must be measured against it - not the clock of whatever
+    machine is running this tool, which can be in a different timezone
+    (found live 2026-09-24: jump host on UTC, devices on EDT, every
+    duration came out 4 hours too long)."""
+    match = re.search(
+        r"(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+\S+\s+\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{4})",
+        raw_clock_output,
+    )
+    if not match:
+        return None
+    time_str, month, day, year = match.groups()
+    try:
+        return datetime.strptime(f"{year} {month} {day} {time_str}", "%Y %b %d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def calculate_duration_in_state(recent_events: list, current_state: str, now: datetime = None) -> str:
     """Calculate how long the interface has been in its current
     state, based on the most recent matching event timestamp pulled
     from the device's own log buffer. Falls back to a plain message
@@ -289,8 +310,11 @@ def calculate_duration_in_state(recent_events: list, current_state: str) -> str:
     try:
         # Device logs don't include the year - assume current year,
         # which is correct for anything in the recent log buffer.
-        event_time = datetime.strptime(f"{datetime.now().year} {timestamp_str}", "%Y %b %d %H:%M:%S")
-        delta = datetime.now() - event_time
+        # `now` should be the device's own clock (see parse_device_clock);
+        # only falls back to this machine's clock if that wasn't available.
+        now = now or datetime.now()
+        event_time = datetime.strptime(f"{now.year} {timestamp_str}", "%Y %b %d %H:%M:%S")
+        delta = now - event_time
         if delta.total_seconds() < 0:
             # Clock skew or year rollover edge case
             return f"Interface has been {current_state.upper()} since {timestamp_str} (device time)."
@@ -710,7 +734,8 @@ def main():
         # regardless of up or down.
         current_state_word = "up" if state["protocol"] == "up" and state["status"] == "up" else "down"
         print("\n--- Time in current state ---")
-        print(f"   {calculate_duration_in_state(recent_events, current_state_word)}")
+        device_now = parse_device_clock(run_command(conn, "show clock"))
+        print(f"   {calculate_duration_in_state(recent_events, current_state_word, device_now)}")
 
         # Transceiver / optical light levels
         print("\n--- Transceiver status ---")
