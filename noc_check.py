@@ -28,7 +28,9 @@ import sys
 import os
 import re
 import getpass
+import socket
 import yaml
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from netmiko import ConnectHandler
 from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
@@ -212,6 +214,29 @@ def load_inventory_host(site: str, hostname: str) -> str:
         return None
 
     return search(inv)
+
+
+def load_site_hosts(site: str) -> dict:
+    """{hostname: ansible_host} for every host in inventory/<site>.yml,
+    whatever group it's under. Empty dict if the file doesn't exist."""
+    inventory_path = os.path.join(INVENTORY_DIR, f"{site}.yml")
+    if not os.path.isfile(inventory_path):
+        return {}
+    with open(inventory_path) as f:
+        inv = yaml.safe_load(f)
+
+    hosts = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, dict) and "ansible_host" in value:
+                    hosts[key] = value["ansible_host"]
+                else:
+                    walk(value)
+
+    walk(inv)
+    return hosts
 
 
 def connect(host_ip: str, username: str, password: str):
@@ -484,6 +509,104 @@ def check_peer_interface_status(site: str, peer_hostname: str, peer_interface: s
     return text, peer_state
 
 
+def find_peer_to_check(site: str, hostname: str, interface: str):
+    """When `hostname` can't be reached, which device (and interface)
+    should a technician run noccheck against instead? The other end of
+    this same link - its own view shows whether the adjacency/session is
+    still up. Returns (peer_hostname, peer_interface) or None.
+
+    Uses the same link maps the checks already rely on. Returns None
+    when the peer isn't in this site's inventory (e.g. the simulated ISP
+    routers), rather than suggesting a command that can't run."""
+    key = (site, hostname, interface)
+    entry = OSPF_NEIGHBOR_CHECK_ON_DOWN.get(key) or BGP_NEIGHBOR_CHECK_ON_DOWN.get(key)
+    if entry:
+        peer = entry["peer"]
+        peer_interface = (
+            find_peer_interface(OSPF_NEIGHBOR_CHECK_ON_DOWN, site, hostname, peer)
+            or find_peer_interface(BGP_NEIGHBOR_CHECK_ON_DOWN, site, hostname, peer)
+        )
+        if peer_interface and load_inventory_host(site, peer):
+            return peer, peer_interface
+        return None
+
+    # WAN interface: the neighbor that pings it over the backbone is the
+    # natural next device, and its backbone interface shows whether it
+    # still sees this router as a BGP peer.
+    neighbor = NEIGHBOR_PING_CHECK.get(key)
+    if neighbor and load_inventory_host(site, neighbor["neighbor"]):
+        return neighbor["neighbor"], neighbor["source_interface"]
+    return None
+
+
+def probe_reachability(hosts: dict, timeout: float = 2.0) -> dict:
+    """{hostname: bool} - can a TCP connection to port 22 be opened?
+    Run in parallel so a wide outage costs ~one timeout, not one per
+    host. This says "accepts SSH connections", not "healthy"."""
+    def check(item):
+        name, ip = item
+        try:
+            with socket.create_connection((ip, 22), timeout=timeout):
+                return name, True
+        except OSError:
+            return name, False
+
+    if not hosts:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(len(hosts), 16)) as pool:
+        return dict(pool.map(check, hosts.items()))
+
+
+def describe_unreachable_scope(hostname: str, site: str, probe: dict) -> str:
+    """Turn a probe of the OTHER devices in the site into a plain
+    statement of how big the problem looks - whether it's isolated to
+    the device the tech asked about, or wider."""
+    up = sorted(n for n, ok in probe.items() if ok)
+    down = sorted(n for n, ok in probe.items() if not ok)
+    if not probe:
+        return "   No other devices in this site's inventory to compare against."
+    lines = ["   Other devices in " + site + " (SSH port 22, from this host):"]
+    if up:
+        lines.append(f"     reachable:   {', '.join(up)}")
+    if down:
+        lines.append(f"     unreachable: {', '.join(down)}")
+    if not down:
+        lines.append(f"   -> Only {hostname} is unreachable. This looks isolated to that device "
+                     f"or its own links.")
+    elif not up:
+        lines.append(f"   -> NOTHING in {site} responds from this host. The fault may be in the "
+                     f"path to the site (or this host's own connectivity), not the device.")
+    else:
+        lines.append(f"   -> {len(down) + 1} of {len(probe) + 1} devices unreachable. This looks "
+                     f"wider than {hostname} alone - suspect a shared link or upstream device.")
+    return "\n".join(lines)
+
+
+def build_unreachable_next_step(site: str, hostname: str, peer) -> str:
+    """The single instruction shown when the device can't be reached.
+    With a peer to try, the exact command is the next step (on its own
+    line, ready to copy) and paging is only the fallback if that fails
+    too. Without one, paging is the next step."""
+    if peer:
+        return (
+            f"   ⚠️  Next step: run\n"
+            f"\n"
+            f"       noccheck {site} {peer[0]} {peer[1]}\n"
+            f"\n"
+            f"   (the other end of the same link - its view shows whether the\n"
+            f"   link to {hostname} is still up.)\n"
+            f"   If that also fails, PAGE NETWORK ENGINEERING.\n"
+            f"\n"
+            f"   This tool cannot investigate {hostname} itself - it requires a live\n"
+            f"   SSH session to the device, and that connection has failed."
+        )
+    return (
+        f"   ⚠️  Next step: PAGE NETWORK ENGINEERING.\n"
+        f"   This tool cannot investigate further - it requires a live SSH\n"
+        f"   session to the device itself, and that connection has failed."
+    )
+
+
 def parse_recent_history(raw_log_output: str, interface: str) -> list:
     """Filter the device's own log buffer down to up/down events for
     the specific interface being checked, most recent first, cleanly
@@ -743,10 +866,15 @@ def main():
     except NetmikoTimeoutException:
         print(f"❌ Could not reach {hostname} ({host_ip}) - connection timed out.")
         print("   This itself may be meaningful - the device or its path may be down.")
+
+        # Point the tech somewhere useful instead of a dead end: how
+        # widespread this looks, then one clear next step - the other
+        # end of the same link when there is one, paging otherwise.
+        others = {n: ip for n, ip in load_site_hosts(site).items() if n != hostname}
         print()
-        print("   ⚠️  Next step: PAGE NETWORK ENGINEERING.")
-        print("   This tool cannot investigate further - it requires a live SSH")
-        print("   session to the device itself, and that connection has failed.")
+        print(describe_unreachable_scope(hostname, site, probe_reachability(others)))
+        print()
+        print(build_unreachable_next_step(site, hostname, find_peer_to_check(site, hostname, interface)))
         sys.exit(1)
     except Exception as exc:
         print(f"❌ Unexpected error connecting to {hostname}: {exc}")
