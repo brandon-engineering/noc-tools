@@ -139,18 +139,25 @@ BGP_NEIGHBOR_CHECK_ON_DOWN = {
 #
 # Value is a dict: neighbor hostname, the backbone interface on that
 # neighbor to source the ping from, and the target IP - the affected
-# router's actual Gi0/0 (WAN) address, reachable only via the static
-# route added by edge_outside_static_routes.yml.
+# router's actual Gi0/0 (WAN) address.
+#
+# NOTE: both edges now share one outside subnet (VLAN 70, 10.10.70.0/28),
+# so the neighbor reaches the target across that shared segment - the
+# "dedicated static route over the backbone" that
+# edge_outside_static_routes.yml describes only made sense when each
+# edge had its own outside subnet. The check is still meaningful: it
+# asks whether the affected router's Gi0/0 answers at all, and sourcing
+# from the backbone interface means the replies come back that way.
 NEIGHBOR_PING_CHECK = {
     ("MemberA", "EdgeR1", "GigabitEthernet0/0"): {
         "neighbor": "EdgeR2",
         "source_interface": "GigabitEthernet0/2",
-        "target_ip": "<edgeR1-gi0/0-ip>",
+        "target_ip": "10.10.70.12",
     },
     ("MemberA", "EdgeR2", "GigabitEthernet0/0"): {
         "neighbor": "EdgeR1",
         "source_interface": "GigabitEthernet0/2",
-        "target_ip": "<edgeR2-gi0/0-ip>",
+        "target_ip": "10.10.70.13",
     },
 }
 
@@ -582,11 +589,13 @@ def describe_unreachable_scope(hostname: str, site: str, probe: dict) -> str:
     return "\n".join(lines)
 
 
-def build_unreachable_next_step(site: str, hostname: str, peer) -> str:
+def build_unreachable_next_step(site: str, hostname: str, peer, unreachable_peer: str = None) -> str:
     """The single instruction shown when the device can't be reached.
     With a peer to try, the exact command is the next step (on its own
     line, ready to copy) and paging is only the fallback if that fails
-    too. Without one, paging is the next step."""
+    too. Without one, paging is the next step. `unreachable_peer` names
+    the other end of the link when the probe already showed it's down as
+    well - suggesting it would just send the tech in a circle."""
     if peer:
         return (
             f"   ⚠️  Next step: run\n"
@@ -599,6 +608,14 @@ def build_unreachable_next_step(site: str, hostname: str, peer) -> str:
             f"\n"
             f"   This tool cannot investigate {hostname} itself - it requires a live\n"
             f"   SSH session to the device, and that connection has failed."
+        )
+    if unreachable_peer:
+        return (
+            f"   ⚠️  Next step: PAGE NETWORK ENGINEERING.\n"
+            f"   The other end of this link ({unreachable_peer}) is also unreachable, so\n"
+            f"   there is no second device to check it from. This tool cannot\n"
+            f"   investigate further - it requires a live SSH session to a device,\n"
+            f"   and those connections have failed."
         )
     return (
         f"   ⚠️  Next step: PAGE NETWORK ENGINEERING.\n"
@@ -872,9 +889,14 @@ def main():
         # end of the same link when there is one, paging otherwise.
         others = {n: ip for n, ip in load_site_hosts(site).items() if n != hostname}
         print()
-        print(describe_unreachable_scope(hostname, site, probe_reachability(others)))
+        probe = probe_reachability(others)
+        print(describe_unreachable_scope(hostname, site, probe))
+        peer = find_peer_to_check(site, hostname, interface)
+        unreachable_peer = None
+        if peer and probe.get(peer[0]) is False:
+            unreachable_peer, peer = peer[0], None
         print()
-        print(build_unreachable_next_step(site, hostname, find_peer_to_check(site, hostname, interface)))
+        print(build_unreachable_next_step(site, hostname, peer, unreachable_peer))
         sys.exit(1)
     except Exception as exc:
         print(f"❌ Unexpected error connecting to {hostname}: {exc}")
